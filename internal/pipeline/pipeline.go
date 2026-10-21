@@ -12,14 +12,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tdewolff/minify/v2"
-	"github.com/tdewolff/minify/v2/css"
-	"github.com/tdewolff/minify/v2/html"
-	"github.com/tdewolff/minify/v2/js"
 	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/goastian/midopress/internal/codec"
+	"github.com/goastian/midopress/internal/fonts"
 	"github.com/goastian/midopress/internal/httpx"
+	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/textmin"
+	"github.com/goastian/midopress/internal/xcache"
 )
 
 // maxExpansion caps how much a compressed text body may grow when decoded,
@@ -48,13 +49,14 @@ const (
 	PassTimeout
 	PassNotSmaller
 	PassError
+	PassBudget
 	numReasons
 )
 
 var reasonNames = [numReasons]string{
 	"transformed", "method", "status", "range", "no-transform", "type", "stream",
 	"encoding", "already-compressed", "no-codec", "too-small", "too-large",
-	"disabled", "animated", "busy", "timeout", "not-smaller", "error",
+	"disabled", "animated", "busy", "timeout", "not-smaller", "error", "budget",
 }
 
 func (r Reason) String() string {
@@ -69,22 +71,30 @@ const NumReasons = int(numReasons)
 
 // TextConfig tunes the compression of text like content.
 type TextConfig struct {
-	Minify     bool  // minify HTML, CSS and JavaScript
-	Recompress bool  // turn gzip, deflate or zstd responses into brotli when the client accepts it
-	BufferMax  int64 // bodies up to this size are buffered, which allows the only-if-smaller check
-	MinBytes   int64 // smaller bodies are not worth compressing
-	MaxDecoded int64 // limit for what a compressed body may expand to
+	Minify     textmin.Config // what to minify, and how far
+	Recompress bool           // turn gzip, deflate or zstd responses into brotli when the client accepts it
+	BufferMax  int64          // bodies up to this size are buffered, which allows the only-if-smaller check
+	MinBytes   int64          // smaller bodies are not worth compressing
+	MaxDecoded int64          // limit for what a compressed body may expand to
 }
 
 // ImageConfig tunes image recoding.
 type ImageConfig struct {
-	JPEGQuality int // 1 to 100, 0 leaves JPEG images alone
+	JPEG        bool // recode JPEG images
+	JPEGQuality int  // 1 to 100 fixes the quality, 0 finds it for each image
 	PNG         bool
 	GIF         bool
 	MinBytes    int64
 	MaxBytes    int64
 	MaxPixels   int64
-	Timeout     time.Duration
+	Timeout     time.Duration // longest a request waits for a recoded image
+	CacheSize   int64         // bytes of recoded images kept, 0 for no cache
+	// Background finishes, after the response went out, the images that did
+	// not fit in Timeout, so that the next request finds them in the cache.
+	Background        bool
+	BackgroundTimeout time.Duration
+	// Warmup compiles the image codecs when the pipeline starts.
+	Warmup bool
 }
 
 // Config is the pipeline configuration.
@@ -93,7 +103,8 @@ type Config struct {
 	MaxConcurrent int           // concurrent CPU heavy transformations, 0 means the number of CPUs
 	TranscodeWait time.Duration // how long to wait for a free slot before passing the response through
 	MemoryBudget  int64         // bytes the pipeline may hold in buffers at the same time
-	Levels        codec.Levels
+	Profile       string        // default profile: lossless, balanced, saver or extreme
+	Levels        codec.Levels  // text levels that replace the ones of the profile, when not zero
 	Text          TextConfig
 	Image         ImageConfig
 }
@@ -105,32 +116,46 @@ func DefaultConfig() Config {
 		MaxConcurrent: 0,
 		TranscodeWait: 250 * time.Millisecond,
 		MemoryBudget:  256 << 20,
-		Levels:        codec.Levels{Brotli: 6, Gzip: 6, Zstd: 3},
+		Profile:       img.ProfileBalanced,
 		Text: TextConfig{
+			Minify:     textmin.DefaultConfig(),
 			Recompress: true,
 			BufferMax:  1 << 20,
 			MinBytes:   256,
 			MaxDecoded: 32 << 20,
 		},
 		Image: ImageConfig{
-			JPEGQuality: 50,
-			PNG:         true,
-			GIF:         true,
-			MinBytes:    1024,
-			MaxBytes:    8 << 20,
-			MaxPixels:   16_000_000,
-			Timeout:     3 * time.Second,
+			JPEG:              true,
+			PNG:               true,
+			GIF:               true,
+			MinBytes:          1024,
+			MaxBytes:          8 << 20,
+			MaxPixels:         16_000_000,
+			Timeout:           3 * time.Second,
+			CacheSize:         256 << 20,
+			Background:        true,
+			BackgroundTimeout: 2 * time.Minute,
+			Warmup:            true,
 		},
 	}
 }
 
 // Pipeline is safe for concurrent use.
 type Pipeline struct {
-	cfg  Config
-	text *codec.Text
-	min  *minify.M
-	sem  chan struct{}
-	mem  *semaphore.Weighted
+	cfg      Config
+	text     *codec.Text
+	profiles map[string]*img.Profile
+	// texts holds one codec per profile: for responses that change on every
+	// request, and for those that look cacheable and can afford a slow level.
+	texts  map[string][2]*codec.Text
+	min    *textmin.Minifier
+	engine *img.Engine
+	cache  *xcache.Cache
+	flight singleflight.Group
+	bg     *background
+	warm   sync.WaitGroup
+	sem    chan struct{}
+	mem    *semaphore.Weighted
 
 	buffers  sync.Pool
 	copyBufs sync.Pool
@@ -164,28 +189,62 @@ func New(cfg Config) *Pipeline {
 	if cfg.Image.Timeout <= 0 {
 		cfg.Image.Timeout = def.Image.Timeout
 	}
+	if cfg.Image.BackgroundTimeout <= 0 {
+		cfg.Image.BackgroundTimeout = def.Image.BackgroundTimeout
+	}
+	if _, err := img.Lookup(cfg.Profile); err != nil {
+		cfg.Profile = def.Profile
+	}
+	if cfg.Text.Minify == (textmin.Config{}) {
+		cfg.Text.Minify = textmin.Config{HTML: textmin.Off, CSS: textmin.Off, JS: textmin.Off, SVG: textmin.Off, JSON: textmin.Off}
+	}
 	cfg.MinGain = min(max(cfg.MinGain, 0), 0.9)
 
 	p := &Pipeline{
-		cfg:  cfg,
-		text: codec.NewText(cfg.Levels),
-		sem:  make(chan struct{}, cfg.MaxConcurrent),
-		mem:  semaphore.NewWeighted(cfg.MemoryBudget),
+		cfg:      cfg,
+		profiles: img.Profiles(),
+		texts:    map[string][2]*codec.Text{},
+		min:      textmin.New(cfg.Text.Minify),
+		engine:   img.NewEngine(img.NewWASM()),
+		cache:    xcache.New(cfg.Image.CacheSize),
+		sem:      make(chan struct{}, cfg.MaxConcurrent),
+		mem:      semaphore.NewWeighted(cfg.MemoryBudget),
+	}
+	for name, prof := range p.profiles {
+		l := codec.Levels{Brotli: prof.Text.Brotli, Gzip: prof.Text.Gzip, Zstd: prof.Text.Zstd}
+		if cfg.Levels.Brotli > 0 {
+			l.Brotli = cfg.Levels.Brotli
+		}
+		if cfg.Levels.Gzip > 0 {
+			l.Gzip = cfg.Levels.Gzip
+		}
+		if cfg.Levels.Zstd > 0 {
+			l.Zstd = cfg.Levels.Zstd
+		}
+		static := l.WithBrotli(max(l.Brotli, prof.Text.BrotliStatic))
+		p.texts[name] = [2]*codec.Text{codec.NewText(l), codec.NewText(static)}
+	}
+	p.text = p.texts[cfg.Profile][0]
+	p.bg = newBackground(p)
+	if cfg.Image.Warmup {
+		p.warm.Add(1)
+		go func() {
+			defer p.warm.Done()
+			p.engine.Warm()
+		}()
 	}
 	p.buffers.New = func() any { return new(bytes.Buffer) }
 	p.copyBufs.New = func() any {
 		b := make([]byte, 32<<10)
 		return &b
 	}
-	if cfg.Text.Minify {
-		p.min = minify.New()
-		p.min.AddFunc("text/html", html.Minify)
-		p.min.AddFunc("text/css", css.Minify)
-		p.min.AddFunc("text/javascript", js.Minify)
-		p.min.AddFunc("application/javascript", js.Minify)
-		p.min.AddFunc("application/x-javascript", js.Minify)
-	}
 	return p
+}
+
+// Close stops the background work.
+func (p *Pipeline) Close() {
+	p.bg.close()
+	p.warm.Wait()
 }
 
 // Outcome describes what happened to one response.
@@ -273,6 +332,9 @@ func (p *Pipeline) classify(req *http.Request, resp *http.Response) (kind, strin
 }
 
 func kindOf(mt string) kind {
+	if fonts.Convertible(mt) {
+		return kindText
+	}
 	switch mt {
 	case "image/jpeg", "image/jpg", "image/png", "image/gif":
 		return kindImage
@@ -288,14 +350,6 @@ func kindOf(mt string) kind {
 		return kindText
 	}
 	return kindNone
-}
-
-func minifiable(mt string) bool {
-	switch mt {
-	case "text/html", "text/css", "text/javascript", "application/javascript", "application/x-javascript":
-		return true
-	}
-	return false
 }
 
 func (p *Pipeline) getBuf() *bytes.Buffer {

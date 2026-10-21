@@ -108,6 +108,9 @@ func walk(v reflect.Value, prefix string, fn func(name string, v reflect.Value))
 		name := prefix + "_" + strings.ToUpper(key)
 		f := v.Field(i)
 		if f.Kind() == reflect.Struct && f.Type() != reflect.TypeFor[time.Time]() {
+			if f.Type() == minifyType {
+				fn(name, f) // a plain true or false, as in the YAML file
+			}
 			walk(f, name, fn)
 			continue
 		}
@@ -118,10 +121,21 @@ func walk(v reflect.Value, prefix string, fn func(name string, v reflect.Value))
 var (
 	durationType = reflect.TypeFor[time.Duration]()
 	byteSizeType = reflect.TypeFor[ByteSize]()
+	minifyType   = reflect.TypeFor[Minify]()
 )
 
 func setValue(v reflect.Value, raw string) error {
 	switch {
+	case v.Type() == minifyType:
+		b, err := strconv.ParseBool(raw)
+		if err != nil {
+			return err
+		}
+		mode := "off"
+		if b {
+			mode = "safe"
+		}
+		v.Set(reflect.ValueOf(Minify{HTML: mode, CSS: mode, JS: mode, SVG: mode, JSON: mode}))
 	case v.Type() == durationType:
 		d, err := time.ParseDuration(raw)
 		if err != nil {

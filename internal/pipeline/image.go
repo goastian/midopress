@@ -3,16 +3,19 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
-	"time"
+	"strings"
 
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/httpx"
-	"github.com/goastian/midopress/internal/negotiate"
+	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/xcache"
 )
 
 var (
@@ -20,21 +23,50 @@ var (
 	errTimeout = errors.New("pipeline: transcoding deadline exceeded")
 )
 
-func (p *Pipeline) imageEnabled(kind codec.ImageKind) bool {
+func (p *Pipeline) imageEnabled(kind img.Format) bool {
 	ic := &p.cfg.Image
 	switch kind {
-	case codec.KindJPEG:
-		return ic.JPEGQuality > 0
-	case codec.KindPNG:
+	case img.JPEG:
+		return ic.JPEG
+	case img.PNG:
 		return ic.PNG
-	case codec.KindGIF:
+	case img.GIF:
 		return ic.GIF
 	}
 	return false
 }
 
-// quality returns the JPEG quality for the request. The header is read per
-// request and never stored, so concurrent requests can not affect each other.
+// profileRank orders the profiles from the most to the least careful.
+func profileRank(name string) int {
+	switch name {
+	case img.ProfileLossless:
+		return 0
+	case img.ProfileBalanced:
+		return 1
+	case img.ProfileSaver:
+		return 2
+	}
+	return 3
+}
+
+// profileFor picks the profile of a request: the one it asks for with
+// X-MidoPress-Profile, else the configured one, raised to at least saver when
+// the client sets Save-Data. It is read per request and never stored.
+func (p *Pipeline) profileFor(h http.Header) *img.Profile {
+	if v := strings.ToLower(strings.TrimSpace(h.Get("X-MidoPress-Profile"))); v != "" {
+		if prof, ok := p.profiles[v]; ok {
+			return prof
+		}
+	}
+	prof := p.profiles[p.cfg.Profile]
+	if strings.EqualFold(strings.TrimSpace(h.Get("Save-Data")), "on") && profileRank(prof.Name) < profileRank(img.ProfileSaver) {
+		return p.profiles[img.ProfileSaver]
+	}
+	return prof
+}
+
+// quality returns the fixed quality for the request, 0 to search for it. The
+// header is read per request, so concurrent requests can not affect each other.
 func (p *Pipeline) quality(h http.Header) int {
 	v := h.Get("X-MidoPress-Quality")
 	if v == "" {
@@ -46,14 +78,63 @@ func (p *Pipeline) quality(h http.Header) int {
 	return p.cfg.Image.JPEGQuality
 }
 
+// hintsFrom reads how the client shows images: the client hints of the browser
+// or, from the extension, X-MidoPress-Viewport as "WIDTHxDPR". The width is
+// rounded up to 50 pixels so that similar screens share cached results.
+func hintsFrom(h http.Header) img.Hints {
+	var hints img.Hints
+	width := func(v string) int {
+		n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil || n < 1 || n > 20000 {
+			return 0
+		}
+		return int(n)
+	}
+	dpr := func(v string) float64 {
+		n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil || n < 0.5 || n > 8 {
+			return 0
+		}
+		return n
+	}
+	if v := h.Get("X-MidoPress-Viewport"); v != "" {
+		w, d, _ := strings.Cut(v, "x")
+		hints.ViewportWidth, hints.DPR = width(w), dpr(d)
+	}
+	if hints.ViewportWidth == 0 {
+		hints.ViewportWidth = width(h.Get("Sec-CH-Viewport-Width"))
+	}
+	if hints.ViewportWidth == 0 {
+		hints.ViewportWidth = width(h.Get("Viewport-Width"))
+	}
+	if hints.DPR == 0 {
+		hints.DPR = dpr(h.Get("Sec-CH-DPR"))
+	}
+	if hints.DPR == 0 {
+		hints.DPR = dpr(h.Get("DPR"))
+	}
+	if hints.ViewportWidth > 0 {
+		hints.ViewportWidth = (hints.ViewportWidth + 49) / 50 * 50
+		hints.DPR = float64(int(hints.DPR*4+0.5)) / 4
+	}
+	return hints
+}
+
+func imageKey(plain []byte, prof *img.Profile, caps img.Caps, hints img.Hints, fixed int) string {
+	h := sha256.New()
+	h.Write(plain)
+	_, _ = fmt.Fprintf(h, "|%s|%v%v%v|%d|%.2f|%d", prof.Name, caps.WebP, caps.AVIF, caps.JXL, hints.ViewportWidth, hints.DPR, fixed)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string) Outcome {
 	ic := &p.cfg.Image
-	declared := codec.KindJPEG
+	declared := img.JPEG
 	switch mt {
 	case "image/png":
-		declared = codec.KindPNG
+		declared = img.PNG
 	case "image/gif":
-		declared = codec.KindGIF
+		declared = img.GIF
 	}
 	if !p.imageEnabled(declared) {
 		return p.passthrough(w, resp, PassDisabled)
@@ -104,95 +185,137 @@ func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *h
 		plain = decoded.Bytes()
 	}
 
-	kind := codec.SniffImage(plain)
-	if kind == codec.KindUnknown || !p.imageEnabled(kind) {
+	kind := img.Sniff(plain)
+	if kind == img.Unknown || !p.imageEnabled(kind) {
 		return p.writeBuffered(w, resp, wire, in.n, PassType)
 	}
-	width, height, err := codec.ImageSize(kind, plain)
+	width, height, err := codec.ImageSize(codecKind(kind), plain)
 	if err != nil {
 		return p.writeBuffered(w, resp, wire, in.n, PassError)
 	}
 	if int64(width)*int64(height) > ic.MaxPixels {
 		return p.writeBuffered(w, resp, wire, in.n, PassTooLarge)
 	}
-	if kind == codec.KindGIF {
-		if frames, err := codec.GIFFrames(plain, 2); err != nil {
-			return p.writeBuffered(w, resp, wire, in.n, PassError)
-		} else if frames > 1 {
-			return p.writeBuffered(w, resp, wire, in.n, PassAnimated)
-		}
-	}
-
-	toWebP := negotiate.AcceptsMedia(req.Header.Get("Accept"), "image/webp")
-	quality := p.quality(req.Header)
-	img, err := p.runCPU(req.Context(), func() (codec.Image, error) {
-		switch kind {
-		case codec.KindJPEG:
-			return codec.RecodeJPEG(plain, quality, toWebP)
-		case codec.KindPNG:
-			return codec.RecodePNG(plain, toWebP)
-		}
-		return codec.RecodeGIF(plain, toWebP)
-	})
-	switch {
-	case errors.Is(err, errBusy):
+	// decoding keeps the picture and a few copies of it
+	pixelWeight := int64(width) * int64(height) * 12
+	if !p.mem.TryAcquire(pixelWeight) {
 		return p.writeBuffered(w, resp, wire, in.n, PassBusy)
-	case errors.Is(err, errTimeout):
-		return p.writeBuffered(w, resp, wire, in.n, PassTimeout)
-	case err != nil:
-		return p.writeBuffered(w, resp, wire, in.n, PassError)
 	}
-	if !p.worthIt(len(img.Data), len(wire)) {
+	defer p.mem.Release(pixelWeight)
+
+	prof := p.profileFor(req.Header)
+	caps := img.CapsFromAccept(req.Header.Get("Accept"))
+	var hints img.Hints
+	if prof.ResizeToViewport {
+		hints = hintsFrom(req.Header)
+	}
+	fixed := p.quality(req.Header)
+	key := imageKey(plain, prof, caps, hints, fixed)
+	input := img.Input{Raw: plain, Format: kind, Caps: caps, Profile: prof, Hints: hints, Fixed: fixed, Budget: ic.Timeout}
+
+	entry, ok := p.cache.Get(key)
+	if !ok {
+		res, err := p.recode(req.Context(), key, input)
+		switch {
+		case errors.Is(err, errBusy):
+			return p.writeBuffered(w, resp, wire, in.n, PassBusy)
+		case errors.Is(err, img.ErrBudget):
+			p.bg.submit(key, withoutBudget(input))
+			return p.writeBuffered(w, resp, wire, in.n, PassBudget)
+		case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):
+			p.bg.submit(key, withoutBudget(input))
+			return p.writeBuffered(w, resp, wire, in.n, PassTimeout)
+		case errors.Is(err, img.ErrUnsupported):
+			return p.writeBuffered(w, resp, wire, in.n, PassType)
+		case err != nil:
+			return p.writeBuffered(w, resp, wire, in.n, PassError)
+		}
+		entry = entryFor(res, len(plain), p.cfg.MinGain)
+		p.cache.Add(key, entry)
+		if res.Limited {
+			p.bg.submit(key, withoutBudget(input))
+		}
+	}
+	if entry.Keep || !p.worthIt(len(entry.Data), len(wire)) {
 		return p.writeBuffered(w, resp, wire, in.n, PassNotSmaller)
 	}
+	return p.writeRecoded(w, resp, srcEnc, entry, prof, hints, in.n)
+}
 
+func withoutBudget(in img.Input) img.Input {
+	in.Budget = 0
+	return in
+}
+
+func codecKind(f img.Format) codec.ImageKind {
+	switch f {
+	case img.JPEG:
+		return codec.KindJPEG
+	case img.PNG:
+		return codec.KindPNG
+	case img.GIF:
+		return codec.KindGIF
+	}
+	return codec.KindUnknown
+}
+
+func (p *Pipeline) writeRecoded(w http.ResponseWriter, resp *http.Response, srcEnc codec.Encoding, e *xcache.Entry, prof *img.Profile, hints img.Hints, bytesIn int64) Outcome {
 	h := w.Header()
 	httpx.CopyHeader(h, resp.Header)
 	httpx.WeakenETag(h)
 	httpx.DropValidators(h)
 	httpx.AddVary(h, "Accept")
+	httpx.AddVary(h, "Save-Data")
+	if prof.ResizeToViewport {
+		httpx.AddVary(h, "Sec-CH-Viewport-Width")
+		httpx.AddVary(h, "Sec-CH-DPR")
+	}
 	if srcEnc != codec.None {
 		httpx.AddVary(h, "Accept-Encoding")
 		h.Del("Content-Encoding")
 	}
-	h.Set("Content-Type", img.ContentType)
-	h.Set("Content-Length", strconv.Itoa(len(img.Data)))
+	h.Set("Content-Type", e.ContentType)
+	h.Set("Content-Length", strconv.Itoa(len(e.Data)))
 	w.WriteHeader(resp.StatusCode)
-	n, _ := w.Write(img.Data)
-	return Outcome{Reason: Transformed, BytesIn: in.n, BytesOut: int64(n), Written: true}
+	n, _ := w.Write(e.Data)
+	return Outcome{Reason: Transformed, BytesIn: bytesIn, BytesOut: int64(n), Written: true}
 }
 
-// runCPU runs fn on a CPU slot with a deadline. The codecs can not be
-// interrupted, so when the deadline passes the goroutine is left to finish in
-// the background; it keeps its slot until then, which bounds the CPU used.
-func (p *Pipeline) runCPU(ctx context.Context, fn func() (codec.Image, error)) (codec.Image, error) {
-	if !p.acquireCPU() {
-		return codec.Image{}, errBusy
-	}
-	type result struct {
-		img codec.Image
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		defer p.releaseCPU()
-		defer func() {
-			if r := recover(); r != nil {
-				done <- result{err: fmt.Errorf("pipeline: codec panic: %v", r)}
-			}
-		}()
-		img, err := fn()
-		done <- result{img, err}
-	}()
-
-	t := time.NewTimer(p.cfg.Image.Timeout)
-	defer t.Stop()
+// recode runs the engine for one image. Requests for the same image that
+// arrive together share one run.
+func (p *Pipeline) recode(ctx context.Context, key string, in img.Input) (*img.Result, error) {
+	ch := p.flight.DoChan(key, func() (any, error) {
+		return p.runCPU(in)
+	})
 	select {
-	case r := <-done:
-		return r.img, r.err
-	case <-t.C:
-		return codec.Image{}, errTimeout
+	case r := <-ch:
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Val.(*img.Result), nil
 	case <-ctx.Done():
-		return codec.Image{}, ctx.Err()
+		return nil, ctx.Err()
 	}
+}
+
+// runCPU runs the engine on a CPU slot. The engine checks its deadline between
+// encodes, and an encode itself can not be interrupted, so the slot is held
+// until it returns, which bounds the CPU used.
+func (p *Pipeline) runCPU(in img.Input) (res *img.Result, err error) {
+	if !p.acquireCPU() {
+		return nil, errBusy
+	}
+	defer p.releaseCPU()
+	defer func() {
+		if r := recover(); r != nil {
+			res, err = nil, fmt.Errorf("pipeline: codec panic: %v", r)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.Image.Timeout)
+	defer cancel()
+	res, err = p.engine.Optimize(ctx, in)
+	if err == nil && ctx.Err() != nil && res == nil {
+		err = errTimeout
+	}
+	return res, err
 }

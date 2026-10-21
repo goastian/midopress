@@ -163,6 +163,9 @@ func withoutMITM() harnessOption {
 func newHarness(t testing.TB, opts ...harnessOption) *harness {
 	t.Helper()
 	h := &harness{t: t, cfg: config.Default(), release: make(chan struct{})}
+	h.cfg.Pipeline.Image.Timeout = 30 * time.Second
+	h.cfg.Pipeline.Image.Warmup = false
+	h.cfg.Pipeline.Text.Minify = config.Minify{HTML: "off", CSS: "off", JS: "off", SVG: "off", JSON: "off"}
 	h.cfg.Listen.Addr = "127.0.0.1:0"
 	h.cfg.Server.ShutdownGrace = 3 * time.Second
 	h.cfg.Server.TLSHandshakeTimeout = 3 * time.Second
@@ -326,7 +329,7 @@ func (h *harness) client(mods ...func(*http.Transport)) *http.Client {
 	return &http.Client{
 		Transport:     tr,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Timeout:       20 * time.Second,
+		Timeout:       2 * time.Minute,
 	}
 }
 

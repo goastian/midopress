@@ -14,7 +14,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chai2010/webp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -298,80 +297,6 @@ func TestGIFFramesMalformed(t *testing.T) {
 	assert.Error(t, err)
 	_, err = GIFFrames(good[:len(good)-1], 100)
 	assert.Error(t, err, "missing trailer")
-}
-
-func TestRecodeJPEG(t *testing.T) {
-	raw := encodeJPEG(t, 95)
-
-	low, err := RecodeJPEG(raw, 20, false)
-	require.NoError(t, err)
-	high, err := RecodeJPEG(raw, 90, false)
-	require.NoError(t, err)
-	assert.Equal(t, "image/jpeg", low.ContentType)
-	assert.Less(t, len(low.Data), len(high.Data))
-	_, err = stdjpeg.Decode(bytes.NewReader(low.Data))
-	assert.NoError(t, err)
-
-	w, err := RecodeJPEG(raw, 50, true)
-	require.NoError(t, err)
-	assert.Equal(t, "image/webp", w.ContentType)
-	_, err = webp.Decode(bytes.NewReader(w.Data))
-	assert.NoError(t, err)
-}
-
-func TestRecodePNG(t *testing.T) {
-	raw := encodePNG(t)
-	p, err := RecodePNG(raw, false)
-	require.NoError(t, err)
-	assert.Equal(t, "image/png", p.ContentType)
-	_, err = png.Decode(bytes.NewReader(p.Data))
-	assert.NoError(t, err)
-
-	w, err := RecodePNG(raw, true)
-	require.NoError(t, err)
-	assert.Equal(t, "image/webp", w.ContentType)
-	_, err = webp.Decode(bytes.NewReader(w.Data))
-	assert.NoError(t, err)
-}
-
-func TestRecodeGIF(t *testing.T) {
-	raw := staticGIF(t)
-	g, err := RecodeGIF(raw, false)
-	require.NoError(t, err)
-	_, err = stdgif.Decode(bytes.NewReader(g.Data))
-	assert.NoError(t, err)
-
-	w, err := RecodeGIF(raw, true)
-	require.NoError(t, err)
-	assert.Equal(t, "image/webp", w.ContentType)
-}
-
-func TestRecodeCorruptInput(t *testing.T) {
-	bad := []byte("\xff\xd8\xff garbage that looks like a jpeg start")
-	_, err := RecodeJPEG(bad, 50, false)
-	assert.Error(t, err)
-	_, err = RecodePNG([]byte("\x89PNG\r\n\x1a\n broken"), false)
-	assert.Error(t, err)
-	_, err = RecodeGIF([]byte("GIF89a broken"), false)
-	assert.Error(t, err)
-}
-
-func TestConcurrentImages(t *testing.T) {
-	raw := encodeJPEG(t, 95)
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range 5 {
-				out, err := RecodeJPEG(raw, 40, false)
-				if assert.NoError(t, err) {
-					assert.NotEmpty(t, out.Data)
-				}
-			}
-		}()
-	}
-	wg.Wait()
 }
 
 func BenchmarkCompressBrotli(b *testing.B) {

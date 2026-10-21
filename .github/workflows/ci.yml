@@ -20,8 +20,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Install libjpeg
-        run: sudo apt-get update && sudo apt-get install -y libjpeg-dev
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15
@@ -33,8 +31,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Install libjpeg
-        run: sudo apt-get update && sudo apt-get install -y libjpeg-dev
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   test-linux:
@@ -44,8 +40,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Install libjpeg
-        run: sudo apt-get update && sudo apt-get install -y libjpeg-dev
       - run: go build ./...
       - run: go test -race -count=1 -shuffle=on ./...
 
@@ -72,34 +66,29 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Install libjpeg
-        run: |
-          brew install jpeg-turbo
-          prefix="$(brew --prefix jpeg-turbo)"
-          echo "CGO_CFLAGS=-I$prefix/include" >> "$GITHUB_ENV"
-          echo "CGO_LDFLAGS=-L$prefix/lib" >> "$GITHUB_ENV"
       - run: go build ./...
       - run: go test -count=1 ./...
 
-  # Windows needs a MinGW toolchain for cgo (libjpeg, libwebp). It is allowed
-  # to fail until the cgo codecs are replaced in phase 2.
   test-windows:
     runs-on: windows-latest
-    continue-on-error: true
-    defaults:
-      run:
-        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          path-type: inherit
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-libjpeg-turbo
       - run: go build ./...
       - run: go test -count=1 ./...
+
+  # The binary has no C dependencies and builds for every release target.
+  cross-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build without cgo for every platform
+        run: |
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/midopress
+          done

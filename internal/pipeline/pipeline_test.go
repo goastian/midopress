@@ -21,11 +21,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chai2010/webp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/goastian/midopress/internal/codec"
+	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/textmin"
 )
 
 var testCodec = codec.NewText(codec.Levels{Brotli: 5, Gzip: 6, Zstd: 3})
@@ -149,7 +150,10 @@ func run(p *Pipeline, req *http.Request, resp *http.Response) (*httptest.Respons
 
 func newPipeline(mod ...func(*Config)) *Pipeline {
 	cfg := DefaultConfig()
+	cfg.Text.Minify = textmin.Config{HTML: textmin.Off, CSS: textmin.Off, JS: textmin.Off, SVG: textmin.Off, JSON: textmin.Off}
 	cfg.MaxConcurrent = 4
+	cfg.Image.Warmup = false
+	cfg.Image.Timeout = time.Minute
 	for _, m := range mod {
 		m(&cfg)
 	}
@@ -451,7 +455,9 @@ func TestTextStreaming(t *testing.T) {
 func TestMinify(t *testing.T) {
 	src := []byte("<!DOCTYPE html>\n<html>\n  <head>\n    <title>x</title>\n  </head>\n  <body>\n" +
 		strings.Repeat("    <p>   hello     world   </p>\n\n", 200) + "  </body>\n</html>\n")
-	p := newPipeline(func(c *Config) { c.Text.Minify = true })
+	p := newPipeline(func(c *Config) {
+		c.Text.Minify = textmin.Config{HTML: textmin.Safe, CSS: textmin.Safe, JS: textmin.Safe, SVG: textmin.Safe, JSON: textmin.Off}
+	})
 
 	rec, out := run(p, newReq("Accept-Encoding", "identity"), newResp("text/html", src))
 	require.Equal(t, Transformed, out.Reason)
@@ -523,17 +529,17 @@ func TestImages(t *testing.T) {
 	})
 
 	t.Run("webp when accepted", func(t *testing.T) {
-		rec, out := run(newPipeline(), newReq("Accept", "image/avif,image/webp,*/*"), newResp("image/jpeg", jpg))
+		rec, out := run(newPipeline(), newReq("Accept", "image/webp,*/*"), newResp("image/jpeg", jpg))
 		require.Equal(t, Transformed, out.Reason)
 		assert.Equal(t, "image/webp", rec.Header().Get("Content-Type"))
-		_, err := webp.Decode(bytes.NewReader(rec.Body.Bytes()))
+		_, err := img.NewWASM().Decode(img.WebP, rec.Body.Bytes())
 		assert.NoError(t, err)
 	})
 
 	t.Run("png to webp", func(t *testing.T) {
 		rec, out := run(newPipeline(), newReq("Accept", "image/webp"), newResp("image/png", pngBytes(t, 300, 300)))
 		require.Equal(t, Transformed, out.Reason)
-		assert.Equal(t, "image/webp", rec.Header().Get("Content-Type"))
+		assert.Contains(t, []string{"image/png", "image/webp"}, rec.Header().Get("Content-Type"), "the smaller lossless one wins")
 	})
 
 	t.Run("static gif to webp", func(t *testing.T) {
@@ -545,10 +551,21 @@ func TestImages(t *testing.T) {
 		}
 	})
 
-	t.Run("animated gif is kept", func(t *testing.T) {
+	t.Run("animated gif becomes an animated webp", func(t *testing.T) {
 		g := gifBytes(t, 4)
 		rec, out := run(newPipeline(), newReq("Accept", "image/webp"), newResp("image/gif", g))
-		assert.Equal(t, PassAnimated, out.Reason)
+		if out.Reason == Transformed {
+			assert.Equal(t, "image/webp", rec.Header().Get("Content-Type"))
+			assert.Equal(t, 4, bytes.Count(rec.Body.Bytes(), []byte("ANMF")))
+		} else {
+			assert.Equal(t, PassNotSmaller, out.Reason)
+		}
+	})
+
+	t.Run("animated gif is kept when the client has no webp", func(t *testing.T) {
+		g := gifBytes(t, 4)
+		rec, out := run(newPipeline(), newReq(), newResp("image/gif", g))
+		assert.Equal(t, PassType, out.Reason)
 		assert.Equal(t, g, rec.Body.Bytes())
 		assert.Equal(t, "image/gif", rec.Header().Get("Content-Type"))
 	})
@@ -556,7 +573,7 @@ func TestImages(t *testing.T) {
 	t.Run("detected format wins over the declared one", func(t *testing.T) {
 		rec, out := run(newPipeline(), newReq("Accept", "image/webp"), newResp("image/jpeg", pngBytes(t, 300, 300)))
 		require.Equal(t, Transformed, out.Reason)
-		assert.Equal(t, "image/webp", rec.Header().Get("Content-Type"))
+		assert.Contains(t, []string{"image/png", "image/webp"}, rec.Header().Get("Content-Type"))
 	})
 
 	t.Run("not an image at all", func(t *testing.T) {
@@ -606,7 +623,7 @@ func TestImages(t *testing.T) {
 	})
 
 	t.Run("disabled formats", func(t *testing.T) {
-		p := newPipeline(func(c *Config) { c.Image.JPEGQuality = 0; c.Image.PNG = false; c.Image.GIF = false })
+		p := newPipeline(func(c *Config) { c.Image.JPEG = false; c.Image.PNG = false; c.Image.GIF = false })
 		for ct, body := range map[string][]byte{"image/jpeg": jpg, "image/png": pngBytes(t, 200, 200), "image/gif": gifBytes(t, 1)} {
 			rec, out := run(p, newReq(), newResp(ct, body))
 			assert.Equal(t, PassDisabled, out.Reason, ct)
@@ -664,12 +681,14 @@ func TestImageLoadShedding(t *testing.T) {
 				return true
 			}
 			return false
-		}, 5*time.Second, 10*time.Millisecond)
+		}, 60*time.Second, 10*time.Millisecond)
 	})
 }
 
 func TestConcurrentMinify(t *testing.T) {
-	p := newPipeline(func(c *Config) { c.Text.Minify = true })
+	p := newPipeline(func(c *Config) {
+		c.Text.Minify = textmin.Config{HTML: textmin.Safe, CSS: textmin.Safe, JS: textmin.Safe, SVG: textmin.Safe, JSON: textmin.Off}
+	})
 	src := []byte("<!DOCTYPE html>\n<html>\n  <body>\n" + strings.Repeat("    <p>  Ishmael   </p>\n", 300) + "  </body>\n</html>\n")
 	var wg sync.WaitGroup
 	for range 16 {

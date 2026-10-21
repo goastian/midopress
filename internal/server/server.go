@@ -18,6 +18,7 @@ import (
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/pipeline"
 	"github.com/goastian/midopress/internal/proxy"
+	"github.com/goastian/midopress/internal/textmin"
 	"github.com/goastian/midopress/internal/upstream"
 )
 
@@ -37,6 +38,7 @@ type Server struct {
 	upstreamHook func(*upstream.Options)
 
 	auth    *auth.Authenticator
+	pipe    *pipeline.Pipeline
 	proxy   *proxy.Proxy
 	certs   *certReloader
 	tlsConf *tls.Config
@@ -113,10 +115,11 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 		s.upstreamHook(&upOpts)
 	}
 
+	s.pipe = pipeline.New(pipelineConfig(cfg))
 	s.proxy = proxy.New(proxy.Options{
 		Auth:      a,
 		Upstream:  upstream.New(upOpts),
-		Pipeline:  pipeline.New(pipelineConfig(cfg)),
+		Pipeline:  s.pipe,
 		Issuer:    issuer,
 		Policy:    policy,
 		CACertPEM: caPEM,
@@ -157,27 +160,37 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 
 func pipelineConfig(cfg *config.Config) pipeline.Config {
 	p := cfg.Pipeline
+	mode := func(m string) textmin.Mode { return textmin.Mode(m) }
 	return pipeline.Config{
 		MinGain:       p.MinGain,
 		MaxConcurrent: p.MaxConcurrentTranscodes,
 		TranscodeWait: p.TranscodeWait,
 		MemoryBudget:  int64(p.MemoryBudget),
+		Profile:       p.Profile,
 		Levels:        codec.Levels{Brotli: p.Text.Brotli, Gzip: p.Text.Gzip, Zstd: p.Text.Zstd},
 		Text: pipeline.TextConfig{
-			Minify:     p.Text.Minify,
+			Minify: textmin.Config{
+				HTML: mode(p.Text.Minify.HTML), CSS: mode(p.Text.Minify.CSS), JS: mode(p.Text.Minify.JS),
+				SVG: mode(p.Text.Minify.SVG), JSON: mode(p.Text.Minify.JSON), SkipMinified: true,
+			},
 			Recompress: p.Text.Recompress,
 			BufferMax:  int64(p.Text.BufferMax),
 			MinBytes:   int64(p.Text.MinBytes),
 			MaxDecoded: int64(p.Text.MaxDecoded),
 		},
 		Image: pipeline.ImageConfig{
-			JPEGQuality: p.Image.JPEGQuality,
-			PNG:         p.Image.PNG,
-			GIF:         p.Image.GIF,
-			MinBytes:    int64(p.Image.MinBytes),
-			MaxBytes:    int64(p.Image.MaxBytes),
-			MaxPixels:   p.Image.MaxPixels,
-			Timeout:     p.Image.Timeout,
+			JPEG:              p.Image.JPEG,
+			JPEGQuality:       p.Image.JPEGQuality,
+			PNG:               p.Image.PNG,
+			GIF:               p.Image.GIF,
+			MinBytes:          int64(p.Image.MinBytes),
+			MaxBytes:          int64(p.Image.MaxBytes),
+			MaxPixels:         p.Image.MaxPixels,
+			Timeout:           p.Image.Timeout,
+			CacheSize:         int64(p.Image.CacheSize),
+			Background:        p.Image.Background,
+			BackgroundTimeout: p.Image.BackgroundTimeout,
+			Warmup:            p.Image.Warmup,
 		},
 	}
 }
@@ -235,6 +248,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	defer s.auth.Close()
+	defer s.pipe.Close()
 
 	errc := make(chan error, 2)
 	go func() { errc <- s.main.Serve(s.ln) }()

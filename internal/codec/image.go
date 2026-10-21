@@ -7,10 +7,6 @@ import (
 	stdgif "image/gif"
 	stdjpeg "image/jpeg"
 	"image/png"
-	"sync"
-
-	"github.com/chai2010/webp"
-	"github.com/pixiv/go-libjpeg/jpeg"
 )
 
 // ImageKind is an image format the proxy can recode.
@@ -112,75 +108,4 @@ func skipSubBlocks(b []byte, pos int) (int, bool) {
 		pos += n
 	}
 	return pos, false
-}
-
-// Image is the result of recoding an image.
-type Image struct {
-	Data        []byte
-	ContentType string
-}
-
-const webpType = "image/webp"
-
-var pngBuffers = &pngPool{}
-
-type pngPool struct{ p sync.Pool }
-
-func (b *pngPool) Get() *png.EncoderBuffer {
-	buf, _ := b.p.Get().(*png.EncoderBuffer)
-	return buf
-}
-
-func (b *pngPool) Put(buf *png.EncoderBuffer) { b.p.Put(buf) }
-
-// RecodeJPEG decodes a JPEG and encodes it again at the given quality, as
-// WebP when toWebP is set.
-func RecodeJPEG(raw []byte, quality int, toWebP bool) (Image, error) {
-	img, err := jpeg.Decode(bytes.NewReader(raw), &jpeg.DecoderOptions{})
-	if err != nil {
-		return Image{}, err
-	}
-	var out bytes.Buffer
-	out.Grow(len(raw) / 2)
-	if toWebP {
-		err = webp.Encode(&out, img, &webp.Options{Quality: float32(quality)})
-		return Image{Data: out.Bytes(), ContentType: webpType}, err
-	}
-	err = jpeg.Encode(&out, img, &jpeg.EncoderOptions{Quality: quality, OptimizeCoding: true})
-	return Image{Data: out.Bytes(), ContentType: "image/jpeg"}, err
-}
-
-// RecodePNG decodes a PNG and encodes it again, as lossless WebP when toWebP
-// is set.
-func RecodePNG(raw []byte, toWebP bool) (Image, error) {
-	img, err := png.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return Image{}, err
-	}
-	var out bytes.Buffer
-	out.Grow(len(raw))
-	if toWebP {
-		err = webp.Encode(&out, img, &webp.Options{Lossless: true})
-		return Image{Data: out.Bytes(), ContentType: webpType}, err
-	}
-	enc := png.Encoder{CompressionLevel: png.BestCompression, BufferPool: pngBuffers}
-	err = enc.Encode(&out, img)
-	return Image{Data: out.Bytes(), ContentType: "image/png"}, err
-}
-
-// RecodeGIF decodes the first frame of a GIF and encodes it again, as lossless
-// WebP when toWebP is set. Animated GIFs must be filtered out beforehand.
-func RecodeGIF(raw []byte, toWebP bool) (Image, error) {
-	img, err := stdgif.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return Image{}, err
-	}
-	var out bytes.Buffer
-	out.Grow(len(raw))
-	if toWebP {
-		err = webp.Encode(&out, img, &webp.Options{Lossless: true})
-		return Image{Data: out.Bytes(), ContentType: webpType}, err
-	}
-	err = stdgif.Encode(&out, img, nil)
-	return Image{Data: out.Bytes(), ContentType: "image/gif"}, err
 }

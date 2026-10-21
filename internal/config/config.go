@@ -88,8 +88,11 @@ type Pipeline struct {
 	MaxConcurrentTranscodes int           `yaml:"max_concurrent_transcodes"`
 	TranscodeWait           time.Duration `yaml:"transcode_wait"`
 	MemoryBudget            ByteSize      `yaml:"memory_budget"`
-	Text                    Text          `yaml:"text"`
-	Image                   Image         `yaml:"image"`
+	// Profile is how far images may be pushed: lossless, balanced, saver or
+	// extreme. A client can ask for another one per request.
+	Profile string `yaml:"profile"`
+	Text    Text   `yaml:"text"`
+	Image   Image  `yaml:"image"`
 }
 
 // Text configures the compression of text like content.
@@ -97,15 +100,48 @@ type Text struct {
 	Brotli     int      `yaml:"brotli"`
 	Gzip       int      `yaml:"gzip"`
 	Zstd       int      `yaml:"zstd"`
-	Minify     bool     `yaml:"minify"`
+	Minify     Minify   `yaml:"minify"`
 	Recompress bool     `yaml:"recompress"`
 	BufferMax  ByteSize `yaml:"buffer_max"`
 	MinBytes   ByteSize `yaml:"min_bytes"`
 	MaxDecoded ByteSize `yaml:"max_decoded"`
 }
 
+// Minify says how much each kind of text may be minified: off, safe or
+// aggressive. In YAML a plain true or false is accepted too, for the settings
+// of earlier versions: true is safe for every kind.
+type Minify struct {
+	HTML string `yaml:"html"`
+	CSS  string `yaml:"css"`
+	JS   string `yaml:"js"`
+	SVG  string `yaml:"svg"`
+	JSON string `yaml:"json"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (m *Minify) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		var on bool
+		if err := n.Decode(&on); err != nil {
+			return fmt.Errorf("minify must be true, false or a map: %w", err)
+		}
+		mode := "off"
+		if on {
+			mode = "safe"
+		}
+		*m = Minify{HTML: mode, CSS: mode, JS: mode, SVG: mode, JSON: mode}
+		return nil
+	}
+	type plain Minify
+	return n.Decode((*plain)(m))
+}
+
 // Image configures image recoding.
 type Image struct {
+	// JPEG turns JPEG recoding on or off.
+	JPEG bool `yaml:"jpeg"`
+	// JPEGQuality fixes the quality of recoded images, 1 to 100. 0 lets the
+	// proxy find, for each image, the lowest quality that meets the profile.
 	JPEGQuality int           `yaml:"jpeg_quality"`
 	PNG         bool          `yaml:"png"`
 	GIF         bool          `yaml:"gif"`
@@ -113,6 +149,17 @@ type Image struct {
 	MaxBytes    ByteSize      `yaml:"max_bytes"`
 	MaxPixels   int64         `yaml:"max_pixels"`
 	Timeout     time.Duration `yaml:"timeout"`
+	// CacheSize is the memory used to keep recoded images and fonts, so that a
+	// popular file is only recoded once. 0 disables the cache.
+	CacheSize ByteSize `yaml:"cache_size"`
+	// Background lets slow formats, which do not fit in timeout, be produced
+	// after the response was sent, for the next request to find in the cache.
+	Background bool `yaml:"background"`
+	// BackgroundTimeout is the longest one such job may take.
+	BackgroundTimeout time.Duration `yaml:"background_timeout"`
+	// Warmup compiles the image codecs when the proxy starts, so that the first
+	// image does not pay for it.
+	Warmup bool `yaml:"warmup"`
 }
 
 // Log configures logging.
@@ -156,23 +203,26 @@ func Default() *Config {
 			MinGain:       0.02,
 			TranscodeWait: 250 * time.Millisecond,
 			MemoryBudget:  256 << 20,
+			Profile:       "balanced",
 			Text: Text{
-				Brotli:     6,
-				Gzip:       6,
-				Zstd:       3,
+				Minify:     Minify{HTML: "safe", CSS: "safe", JS: "off", SVG: "safe", JSON: "safe"},
 				Recompress: true,
 				BufferMax:  1 << 20,
 				MinBytes:   256,
 				MaxDecoded: 32 << 20,
 			},
 			Image: Image{
-				JPEGQuality: 50,
-				PNG:         true,
-				GIF:         true,
-				MinBytes:    1024,
-				MaxBytes:    8 << 20,
-				MaxPixels:   16_000_000,
-				Timeout:     3 * time.Second,
+				JPEG:              true,
+				PNG:               true,
+				GIF:               true,
+				MinBytes:          1024,
+				MaxBytes:          8 << 20,
+				MaxPixels:         16_000_000,
+				Timeout:           3 * time.Second,
+				CacheSize:         256 << 20,
+				Background:        true,
+				BackgroundTimeout: 2 * time.Minute,
+				Warmup:            true,
 			},
 		},
 		Log: Log{Level: "info", Format: "text"},
@@ -249,16 +299,17 @@ func (c *Config) Validate() error {
 	}
 
 	positive := map[string]time.Duration{
-		"upstream.dial_timeout":            c.Upstream.DialTimeout,
-		"upstream.tls_handshake_timeout":   c.Upstream.TLSHandshakeTimeout,
-		"upstream.response_header_timeout": c.Upstream.ResponseHeaderTimeout,
-		"upstream.idle_conn_timeout":       c.Upstream.IdleConnTimeout,
-		"server.read_header_timeout":       c.Server.ReadHeaderTimeout,
-		"server.idle_timeout":              c.Server.IdleTimeout,
-		"server.tls_handshake_timeout":     c.Server.TLSHandshakeTimeout,
-		"server.shutdown_grace":            c.Server.ShutdownGrace,
-		"pipeline.transcode_wait":          c.Pipeline.TranscodeWait,
-		"pipeline.image.timeout":           c.Pipeline.Image.Timeout,
+		"upstream.dial_timeout":             c.Upstream.DialTimeout,
+		"upstream.tls_handshake_timeout":    c.Upstream.TLSHandshakeTimeout,
+		"upstream.response_header_timeout":  c.Upstream.ResponseHeaderTimeout,
+		"upstream.idle_conn_timeout":        c.Upstream.IdleConnTimeout,
+		"server.read_header_timeout":        c.Server.ReadHeaderTimeout,
+		"server.idle_timeout":               c.Server.IdleTimeout,
+		"server.tls_handshake_timeout":      c.Server.TLSHandshakeTimeout,
+		"server.shutdown_grace":             c.Server.ShutdownGrace,
+		"pipeline.transcode_wait":           c.Pipeline.TranscodeWait,
+		"pipeline.image.timeout":            c.Pipeline.Image.Timeout,
+		"pipeline.image.background_timeout": c.Pipeline.Image.BackgroundTimeout,
 	}
 	for name, d := range positive {
 		if d <= 0 {
@@ -279,14 +330,29 @@ func (c *Config) Validate() error {
 	if p.MemoryBudget < 1<<20 {
 		add("pipeline.memory_budget must be at least 1MiB")
 	}
+	switch p.Profile {
+	case "lossless", "balanced", "saver", "extreme":
+	default:
+		add("pipeline.profile %q must be lossless, balanced, saver or extreme", p.Profile)
+	}
 	if p.Text.Brotli < 0 || p.Text.Brotli > 11 {
 		add("pipeline.text.brotli must be between 0 and 11")
 	}
 	if p.Text.Gzip < 0 || p.Text.Gzip > 9 {
 		add("pipeline.text.gzip must be between 0 and 9")
 	}
-	if p.Text.Zstd < 1 || p.Text.Zstd > 22 {
-		add("pipeline.text.zstd must be between 1 and 22")
+	if p.Text.Zstd < 0 || p.Text.Zstd > 22 {
+		add("pipeline.text.zstd must be between 0 and 22")
+	}
+	for name, mode := range map[string]string{"html": p.Text.Minify.HTML, "css": p.Text.Minify.CSS, "js": p.Text.Minify.JS, "svg": p.Text.Minify.SVG, "json": p.Text.Minify.JSON} {
+		switch mode {
+		case "off", "safe", "aggressive":
+		default:
+			add("pipeline.text.minify.%s %q must be off, safe or aggressive", name, mode)
+		}
+	}
+	if p.Image.CacheSize < 0 {
+		add("pipeline.image.cache_size must not be negative")
 	}
 	if p.Text.BufferMax < 1024 {
 		add("pipeline.text.buffer_max must be at least 1KiB")

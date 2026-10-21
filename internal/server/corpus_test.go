@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chai2010/webp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/goastian/midopress/internal/codec"
+	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/negotiate"
 )
@@ -247,12 +247,12 @@ func TestRealWorldCorpus(t *testing.T) {
 				}
 
 				switch mt := mediaType(resp.Header); {
-				case mt == "image/webp" && mediaType(e.Headers) != "image/webp":
+				case (mt == "image/webp" || mt == "image/avif" || mt == "image/jxl") && mediaType(e.Headers) != mt:
 					recoded++
-					assertSameSize(t, e, want.Bytes(), plain.Bytes(), true)
+					assertSameSize(t, e, want.Bytes(), plain.Bytes(), mt)
 				case strings.HasPrefix(mt, "image/") && !bytes.Equal(plain.Bytes(), want.Bytes()):
 					recoded++
-					assertSameSize(t, e, want.Bytes(), plain.Bytes(), false)
+					assertSameSize(t, e, want.Bytes(), plain.Bytes(), "")
 					assert.Equal(t, mediaType(e.Headers), mt, e.URL)
 				default:
 					assert.True(t, bytes.Equal(plain.Bytes(), want.Bytes()), "%s: the decoded body differs from the origin's", e.URL)
@@ -303,22 +303,22 @@ func readAll(resp *http.Response) ([]byte, error) {
 
 // assertSameSize checks that a recoded image decodes and has the dimensions of
 // the original.
-func assertSameSize(t *testing.T, e corpusEntry, orig, recoded []byte, isWebP bool) {
+func assertSameSize(t *testing.T, e corpusEntry, orig, recoded []byte, modern string) {
 	t.Helper()
 	oc, _, err := image.DecodeConfig(bytes.NewReader(orig))
 	require.NoError(t, err, e.URL)
-	var rc image.Config
-	if isWebP {
-		rc, err = webp.DecodeConfig(bytes.NewReader(recoded))
-		_, derr := webp.Decode(bytes.NewReader(recoded))
-		assert.NoError(t, derr, "%s: the webp must decode", e.URL)
+	var got image.Image
+	if modern != "" {
+		got, err = decodeModern(modern, recoded)
 	} else {
-		var img image.Image
-		img, _, err = image.Decode(bytes.NewReader(recoded))
-		if err == nil {
-			rc.Width, rc.Height = img.Bounds().Dx(), img.Bounds().Dy()
-		}
+		got, _, err = image.Decode(bytes.NewReader(recoded))
 	}
-	require.NoError(t, err, e.URL)
-	assert.Equal(t, [2]int{oc.Width, oc.Height}, [2]int{rc.Width, rc.Height}, "%s: dimensions must not change", e.URL)
+	require.NoError(t, err, "%s: the recoded image must decode", e.URL)
+	b := got.Bounds()
+	assert.Equal(t, [2]int{oc.Width, oc.Height}, [2]int{b.Dx(), b.Dy()}, "%s: dimensions must not change", e.URL)
+}
+
+func decodeModern(mt string, b []byte) (image.Image, error) {
+	f := map[string]img.Format{"image/webp": img.WebP, "image/avif": img.AVIF, "image/jxl": img.JXL}[mt]
+	return img.NewWASM().Decode(f, b)
 }

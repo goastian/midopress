@@ -52,7 +52,7 @@ log: {level: debug, format: json, urls: true}
 	assert.Equal(t, "token", cfg.Auth.Mode)
 	assert.Equal(t, ByteSize(512<<20), cfg.Pipeline.MemoryBudget)
 	assert.Equal(t, 9, cfg.Pipeline.Text.Brotli)
-	assert.Equal(t, 6, cfg.Pipeline.Text.Gzip)
+	assert.Equal(t, 0, cfg.Pipeline.Text.Gzip, "0 means the level of the profile")
 	assert.Equal(t, ByteSize(2<<20), cfg.Pipeline.Text.BufferMax)
 	assert.Equal(t, 70, cfg.Pipeline.Image.JPEGQuality)
 	assert.Equal(t, 5*time.Second, cfg.Pipeline.Image.Timeout)
@@ -101,7 +101,7 @@ func TestEnvOverridesFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ":2222", cfg.Listen.Addr)
 	assert.Equal(t, 11, cfg.Pipeline.Text.Brotli)
-	assert.True(t, cfg.Pipeline.Text.Minify)
+	assert.Equal(t, "safe", cfg.Pipeline.Text.Minify.JS, "a plain true means safe for every kind")
 	assert.Equal(t, ByteSize(1<<30), cfg.Pipeline.MemoryBudget)
 	assert.InDelta(t, 0.1, cfg.Pipeline.MinGain, 1e-9)
 	assert.False(t, cfg.Auth.BlockGlobal)
@@ -178,7 +178,7 @@ func TestValidate(t *testing.T) {
 		{"open proxy", func(c *Config) { c.Auth.BlockGlobal = false }, "open proxy"},
 		{"brotli range", func(c *Config) { c.Pipeline.Text.Brotli = 12 }, "brotli"},
 		{"gzip range", func(c *Config) { c.Pipeline.Text.Gzip = 10 }, "gzip"},
-		{"zstd range", func(c *Config) { c.Pipeline.Text.Zstd = 0 }, "zstd"},
+		{"zstd range", func(c *Config) { c.Pipeline.Text.Zstd = 23 }, "zstd"},
 		{"jpeg range", func(c *Config) { c.Pipeline.Image.JPEGQuality = 101 }, "jpeg_quality"},
 		{"min gain", func(c *Config) { c.Pipeline.MinGain = 0.95 }, "min_gain"},
 		{"budget", func(c *Config) { c.Pipeline.MemoryBudget = 1000 }, "memory_budget"},

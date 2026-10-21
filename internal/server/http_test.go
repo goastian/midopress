@@ -199,22 +199,32 @@ func TestImagesThroughProxy(t *testing.T) {
 	})
 
 	t.Run("webp when the browser accepts it", func(t *testing.T) {
-		resp, body := h.get(c, h.plainURL("/image/jpeg"), "Accept", "image/avif,image/webp,*/*")
-		assert.Equal(t, "image/webp", resp.Header.Get("Content-Type"))
-		assert.Equal(t, "RIFF", string(body[:4]))
+		resp, body := h.get(c, h.plainURL("/image/jpeg"), "Accept", "image/webp,*/*")
+		ct := resp.Header.Get("Content-Type")
+		assert.Contains(t, []string{"image/webp", "image/jpeg"}, ct, "the smaller of what the client accepts")
+		if ct == "image/webp" {
+			assert.Equal(t, "RIFF", string(body[:4]))
+		}
 		assert.Contains(t, resp.Header.Values("Vary"), "Accept")
+		assert.Less(t, len(body), len(f.jpeg))
 	})
 
 	t.Run("png to webp", func(t *testing.T) {
 		resp, body := h.get(c, h.plainURL("/image/png"), "Accept", "image/webp")
-		assert.Equal(t, "image/webp", resp.Header.Get("Content-Type"))
+		assert.Contains(t, []string{"image/png", "image/webp"}, resp.Header.Get("Content-Type"))
 		assert.Less(t, len(body), len(f.png))
 	})
 
-	t.Run("an animated gif is not flattened", func(t *testing.T) {
+	t.Run("an animated gif keeps its frames", func(t *testing.T) {
 		resp, body := h.get(c, h.plainURL("/image/animated"), "Accept", "image/webp")
+		if resp.Header.Get("Content-Type") == "image/webp" {
+			assert.Equal(t, 4, bytes.Count(body, []byte("ANMF")))
+		} else {
+			assert.Equal(t, f.gifAnimated, body)
+		}
+		resp, body = h.get(c, h.plainURL("/image/animated"))
 		assert.Equal(t, "image/gif", resp.Header.Get("Content-Type"))
-		assert.Equal(t, f.gifAnimated, body)
+		assert.Equal(t, f.gifAnimated, body, "a client without webp gets the gif as it was")
 	})
 }
 

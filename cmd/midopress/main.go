@@ -32,6 +32,7 @@ const usage = `usage: midopress [flags]
        midopress config check [flags]
        midopress ca init|export [flags]
        midopress device add|list|revoke -file devices.json [flags]
+       midopress bench [flags] <directory with images>
        midopress version
 
 With no subcommand it runs the proxy. Run a subcommand with -h for its flags.
@@ -52,6 +53,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) int {
 			return cmdCA(args[1:], stdout, stderr)
 		case "device":
 			return cmdDevice(args[1:], stdout, stderr)
+		case "bench":
+			return cmdBench(args[1:], stdout, stderr)
 		case "version":
 			_, _ = fmt.Fprintln(stdout, "midopress", buildVersion())
 			return 0
@@ -78,6 +81,7 @@ type serveFlags struct {
 	user, pass string
 	brotli     int
 	jpeg       int
+	profile    string
 	gif        bool
 	gzip       int
 	png        bool
@@ -102,12 +106,13 @@ func newServeFlags(name string, stderr io.Writer) *serveFlags {
 	fs.StringVar(&f.caKey, "cakey", "", "CA key path")
 	fs.StringVar(&f.user, "user", "", "proxy user name")
 	fs.StringVar(&f.pass, "pass", "", "proxy password")
-	fs.IntVar(&f.brotli, "brotli", 6, "Brotli compression level (0-11)")
-	fs.IntVar(&f.jpeg, "jpeg", 50, "jpeg quality (1-100, 0 to disable)")
+	fs.IntVar(&f.brotli, "brotli", 0, "Brotli compression level (1-11), 0 uses the one of the profile")
+	fs.IntVar(&f.jpeg, "jpeg", 0, "fixed quality of recoded images (1-100) instead of finding it for each image; 0 turns jpeg recoding off")
+	fs.StringVar(&f.profile, "profile", "balanced", "how far images are pushed: lossless, balanced, saver or extreme")
 	fs.BoolVar(&f.gif, "gif", true, "recode static gifs, animated ones are never touched")
-	fs.IntVar(&f.gzip, "gzip", 6, "gzip compression level (0-9)")
+	fs.IntVar(&f.gzip, "gzip", 0, "gzip compression level (1-9), 0 uses the one of the profile")
 	fs.BoolVar(&f.png, "png", true, "recode png")
-	fs.BoolVar(&f.minify, "minify", false, "minify css/html/js - WARNING: tends to break the web")
+	fs.BoolVar(&f.minify, "minify", false, "minify html, css and javascript (safe mode); breaks Subresource Integrity hashes, see the config file for finer control")
 	fs.StringVar(&f.logLevel, "log-level", "info", "log level: debug, info, warn or error")
 	fs.StringVar(&f.logFormat, "log-format", "text", "log format: text or json")
 	fs.BoolVar(&f.logURLs, "log-urls", false, "log request URLs (off by default for privacy)")
@@ -150,13 +155,20 @@ func (f *serveFlags) load(environ []string) (*config.Config, error) {
 		case "gzip":
 			cfg.Pipeline.Text.Gzip = f.gzip
 		case "jpeg":
+			cfg.Pipeline.Image.JPEG = f.jpeg != 0
 			cfg.Pipeline.Image.JPEGQuality = f.jpeg
+		case "profile":
+			cfg.Pipeline.Profile = f.profile
 		case "gif":
 			cfg.Pipeline.Image.GIF = f.gif
 		case "png":
 			cfg.Pipeline.Image.PNG = f.png
 		case "minify":
-			cfg.Pipeline.Text.Minify = f.minify
+			mode := "off"
+			if f.minify {
+				mode = "safe"
+			}
+			cfg.Pipeline.Text.Minify.HTML, cfg.Pipeline.Text.Minify.CSS, cfg.Pipeline.Text.Minify.JS = mode, mode, mode
 		case "log-level":
 			cfg.Log.Level = f.logLevel
 		case "log-format":

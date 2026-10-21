@@ -70,6 +70,9 @@ type Levels struct {
 	Zstd   int // 1 to 22, mapped to the closest level of the Go encoder
 }
 
+// WithBrotli returns the levels with another brotli level.
+func (l Levels) WithBrotli(q int) Levels { l.Brotli = q; return l }
+
 // StreamWriter compresses what is written to it. Close finishes the stream and
 // returns the encoder to its pool, the writer must not be used afterwards.
 type StreamWriter interface {

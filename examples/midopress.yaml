@@ -80,12 +80,34 @@ pipeline:
   # passed through. Images also need memory to decode: about 4 bytes per pixel
   # for each concurrent job.
   memory_budget: 256MiB
+  # How far images may be pushed. Every profile keeps an image looking the same
+  # to a person; they differ in how strict the measured similarity is.
+  #   lossless  only bit-exact work: metadata, PNG optimization, lossless recoding
+  #   balanced  similarity 0.975, dimensions never change
+  #   saver     similarity 0.95, big images shrink to the screen size when the
+  #             client says it (Sec-CH-Viewport-Width, Sec-CH-DPR or the
+  #             X-MidoPress-Viewport header, WIDTHxDPR); lossy animations
+  #   extreme   similarity 0.90, PNG graphics reduced to 256 colours, animations
+  #             become their first frame
+  # A client can ask for another one with the X-MidoPress-Profile header, and
+  # Save-Data: on raises balanced to saver.
+  profile: balanced
   text:
-    brotli: 6
-    gzip: 6
-    zstd: 3
-    # Minify HTML, CSS and JavaScript. It can break pages.
-    minify: false
+    # Compression levels. 0 uses the level of the profile, which also compresses
+    # responses that look cacheable with a slower level, once, and keeps the result.
+    brotli: 0
+    gzip: 0
+    zstd: 0
+    # What to minify: off, safe or aggressive. Safe never changes how a page
+    # looks or what a script does. Minified files break Subresource Integrity
+    # (integrity="...") checks, which is why JavaScript is off by default. Files
+    # that already look minified are skipped. A plain true or false sets them all.
+    minify:
+      html: safe
+      css: safe
+      js: "off"
+      svg: safe
+      json: safe
     # Turn gzip, deflate and zstd responses into brotli when the client accepts
     # it. Only done for bodies of known size up to buffer_max.
     recompress: true
@@ -96,17 +118,30 @@ pipeline:
     # Largest size a compressed body may expand to.
     max_decoded: 32MiB
   image:
-    # 0 leaves JPEG images alone. A client can ask for another quality per
-    # request with the X-MidoPress-Quality header.
-    jpeg_quality: 50
+    # Recode JPEG images.
+    jpeg: true
+    # 0 finds, for each image, the lowest quality that meets the profile. A
+    # number from 1 to 100 fixes the quality instead. A client can ask for one
+    # per request with the X-MidoPress-Quality header.
+    jpeg_quality: 0
     png: true
-    # Static GIFs only, animated ones are never touched.
+    # GIF, animated ones become animated WebP for clients that accept it.
     gif: true
     min_bytes: 1KiB
     max_bytes: 8MiB
     max_pixels: 16000000
-    # Longest a single image may take to recode.
+    # Longest a request waits for an image to be recoded.
     timeout: 3s
+    # Memory used to keep recoded images and fonts, so that a popular file is
+    # only recoded once. 0 disables the cache.
+    cache_size: 256MiB
+    # AVIF and JPEG XL take seconds in WebAssembly. With this on, an image that
+    # does not fit in timeout is sent as it is and recoded in the background,
+    # and the next request finds the best result in the cache.
+    background: true
+    background_timeout: 2m
+    # Compile the image codecs when the proxy starts instead of on the first image.
+    warmup: true
 
 log:
   level: info

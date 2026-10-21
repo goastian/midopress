@@ -9,19 +9,7 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            os: linux
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            os: linux
-            arch: arm64
-          - runner: macos-latest
-            os: darwin
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,31 +17,27 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Install libjpeg (linux)
-        if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libjpeg-dev
-      - name: Install libjpeg (macos)
-        if: matrix.os == 'darwin'
-        run: |
-          brew install jpeg-turbo
-          prefix="$(brew --prefix jpeg-turbo)"
-          echo "CGO_CFLAGS=-I$prefix/include" >> "$GITHUB_ENV"
-          echo "CGO_LDFLAGS=-L$prefix/lib" >> "$GITHUB_ENV"
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
-          args: build --single-target --clean
+          args: build --clean
       - name: Package
         run: |
-          name="midopress_${GITHUB_REF_NAME#v}_${{ matrix.os }}_${{ matrix.arch }}"
-          mkdir "$name"
-          cp dist/midopress_*/midopress "$name/"
-          cp LICENSE NOTICE README.md "$name/"
-          tar czf "$name.tar.gz" "$name"
+          for d in dist/midopress_*/; do
+            platform="$(basename "$d" | sed -E 's/^midopress_//; s/_v[0-9]+$//; s/_(sse2|v8\.0)$//')"
+            name="midopress_${GITHUB_REF_NAME#v}_${platform}"
+            mkdir "$name"
+            cp "$d"midopress* "$name/"
+            cp LICENSE NOTICE README.md "$name/"
+            if [[ "$platform" == windows_* ]]; then zip -qr "$name.zip" "$name"; else tar czf "$name.tar.gz" "$name"; fi
+          done
+          ls
       - uses: actions/upload-artifact@v7
         with:
-          name: midopress_${{ matrix.os }}_${{ matrix.arch }}
-          path: midopress_*.tar.gz
+          name: release
+          path: |
+            midopress_*.tar.gz
+            midopress_*.zip
 
   publish:
     needs: build
@@ -70,6 +54,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          sha256sum midopress_*.tar.gz > checksums.txt
+          sha256sum midopress_* > checksums.txt
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --generate-notes midopress_*.tar.gz checksums.txt
+            --generate-notes midopress_* checksums.txt

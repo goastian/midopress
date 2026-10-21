@@ -11,17 +11,25 @@ There is a section further down on what changed.
 ## Status
 
 The proxy core has been rewritten and tested hard: it should now be safe to put
-in front of real browsing, which compy was not. What it does not have yet is the
-nicer part. There are no new image formats (AVIF, JPEG XL), no web interface and
-no quality-driven compression. Those are the next phases, see
+in front of real browsing, which compy was not. Images are recoded with modern
+formats (WebP, AVIF, JPEG XL) by a quality search that measures what it does, and
+the binary needs no C libraries. What it does not have yet is the web interface
+and per-user accounting. Those are the next phases.
 
 Things you should know before running it for other people:
 
 - It decrypts HTTPS when you give it a CA, and then it sees everything. It logs
   no URLs and no host names unless you ask, but whoever runs it can read the
   traffic.
-- Image recoding is lossy by default (JPEG quality 50). Text is only
-  compressed, unless you turn on `-minify`, which can break pages.
+- Image recoding is lossy by default, within the `balanced` profile: every
+  result is measured against the original and kept only if it stays above a
+  similarity of 0.975 (SSIM), which is what you can not tell apart by eye. Other
+  profiles are stricter (`lossless`) or push further (`saver`, `extreme`), see
+  [Image profiles](#image-profiles). Text is compressed, and HTML, CSS, SVG and
+  JSON are minified in a safe mode that never changes how a page renders;
+  JavaScript is not minified unless you ask.
+- Minifying a file breaks its Subresource Integrity (`integrity="..."`) hash, if
+  the page has one. Turn the kinds you do not want off in `pipeline.text.minify`.
 - Images are decoded in memory, about 4 bytes per pixel for each job that runs
   at the same time. The defaults are safe for a small machine; see the
   `pipeline` section of the [example configuration](examples/midopress.yaml)
@@ -36,8 +44,19 @@ Things you should know before running it for other people:
   supports it, the result is smaller and the size of the response is known and
   under 1 MiB. Larger ones, and ones of unknown length, keep the origin's
   compression.
-- Recodes JPEG, PNG and static GIF images, as WebP when the browser accepts it.
-  Animated GIFs are left alone.
+- Recodes JPEG, PNG and GIF images with the best format the browser says it
+  accepts (JPEG XL, AVIF, WebP, else a better JPEG made with jpegli or an
+  optimized PNG), at the lowest quality that keeps the picture looking the same.
+  Animated GIFs become animated WebP, and animated PNG is left alone. Colour
+  profiles other than sRGB are never dropped, and the EXIF orientation is applied
+  to the pixels before the metadata is removed.
+- Turns TTF, OTF and WOFF fonts into WOFF2 when the browser is loading a font
+  and accepts it, which saves about a third and does not change a glyph.
+- Keeps what it computed: a popular image or font is recoded once, and the formats
+  that are slow in WebAssembly (AVIF, JPEG XL) are finished in the background for
+  the next request, so nobody waits for them.
+- Does not touch video: it is already compressed with codecs that need hours of
+  CPU to improve a little, and recoding it would break seeking (range requests).
 - Does not make responses bigger: when it can see the whole body (every image,
   and text of known size under 1 MiB), the original is sent unless the result is
   at least 2% smaller. Text of unknown length is compressed as it streams, so it
@@ -55,26 +74,14 @@ Things you should know before running it for other people:
 - Reads its configuration from a YAML file, environment variables or flags.
 
 On a corpus of 37 real pages and files recorded from the web, with HTTPS
-interception on, nothing came out different except by being smaller. For a
-Firefox client the text content was 38% lighter, and the images 33% lighter at
-quality 50.
+interception on, nothing came out different except by being smaller. The image
+numbers are in [Benchmark](#benchmark).
 
 ## Installation
 
-You need Go 1.27, a C compiler and the libjpeg headers, because the image
-codecs still use cgo. That goes away when we move to codecs without cgo
-(phase 2).
-
-```sh
-# Fedora
-sudo dnf install gcc libjpeg-turbo-devel
-# Debian, Ubuntu
-sudo apt install gcc libjpeg-dev
-# macOS
-brew install jpeg-turbo
-export CGO_CFLAGS="-I$(brew --prefix jpeg-turbo)/include"
-export CGO_LDFLAGS="-L$(brew --prefix jpeg-turbo)/lib"
-```
+You need Go 1.27. There is no C compiler, no cgo and no C library to install:
+the image codecs run as WebAssembly inside the binary, so it is built with
+`CGO_ENABLED=0` for Linux, macOS and Windows.
 
 Then:
 
@@ -127,8 +134,45 @@ midopress config check -config midopress.yaml -print   # show the effective sett
 
 The flags that compy had still work: `-host`, `-cert`, `-key`, `-ca`, `-cakey`,
 `-user`, `-pass`, `-brotli`, `-gzip`, `-jpeg`, `-png`, `-gif` and `-minify`.
-`-log-level`, `-log-format`, `-log-urls` and `-block-global` are new. Run
+`-jpeg N` now fixes the quality (and `-jpeg 0` still turns JPEG off); without it
+the quality is found for each image. `-profile` is new, with `-log-level`,
+`-log-format`, `-log-urls` and `-block-global`. Run
 `midopress -h` for the list.
+
+### Image profiles
+
+A profile says how far an image may be pushed. All of them keep the picture
+looking the same to a person; they differ in how strict the measurement is:
+
+| profile | similarity (SSIM) | what else |
+|---|---|---|
+| `lossless` | exact | only metadata, PNG optimization and lossless recoding |
+| `balanced` (default) | 0.975 | dimensions never change |
+| `saver` | 0.95 | big images shrink to the screen when the client says its size; lossy animations |
+| `extreme` | 0.90 | PNG graphics reduced to 256 colours, animations become their first frame |
+
+Set the default with `pipeline.profile` or `-profile`. A client can ask for
+another one per request with `X-MidoPress-Profile`, and `Save-Data: on` raises
+`balanced` to `saver`. For the screen size the proxy reads `Sec-CH-Viewport-Width`
+and `Sec-CH-DPR` (the origin has to ask for them with `Accept-CH`), or the header
+`X-MidoPress-Viewport: WIDTHxDPR` that the MidoPress extension will send.
+`X-MidoPress-Quality` fixes the quality of one request and skips the search.
+
+Pictures with few colours (logos, screenshots, icons) are graphics and stay
+lossless in every profile except `extreme`. Photographs, including PNG
+photographs, are recoded against the similarity target.
+
+### Speed
+
+WebAssembly is about ten times slower than native code for AVIF and JPEG XL, a
+second or more per megapixel. The proxy copes in two ways. An image that does not
+fit in `pipeline.image.timeout` is sent as it is (or as a fast jpegli/WebP
+recoding) and finished in the background, and the next request gets the best
+result from the cache. And if the shared libraries of libwebp, libavif and libjxl
+are installed, the codecs find and use them without cgo, which is about ten times
+faster. The Docker image can include them with `--build-arg NATIVE_CODECS=1`; it
+is off by default because one stress run of that path (about ten runs in total)
+crashed inside the C library bindings.
 
 ### Authentication
 
@@ -247,10 +291,6 @@ benchmarks of the whole proxy:
 go test -run '^$' -bench . -benchmem ./internal/server/
 ```
 
-The tool versions we use in CI are in `.github/workflows/`. How the code is laid
-out and where it is heading is explained in
-[docs/04-proposed-architecture.md](docs/04-proposed-architecture.md).
-
 ## What changed from compy
 
 - The module is `github.com/goastian/midopress` and the binary is `midopress`.
@@ -259,8 +299,8 @@ out and where it is heading is explained in
   left alone, a failed conversion falls back to the original, there are
   timeouts and limits, authentication is not open to timing attacks, and the
   certificate for each HTTPS site is made properly. The list of what was wrong
-  with compy, and what happened to each item, is in
-  [docs/01-current-state.md](docs/01-current-state.md).
+  with compy, and what happened to each item. 
+
 - Behavior you may notice: `block_global` is on, unknown paths on the proxy
   itself answer 404 instead of 501, HTTP/2 clients can ask for another host the
   way browsers do, and the quality header is `X-MidoPress-Quality` (the old
@@ -269,11 +309,34 @@ out and where it is heading is explained in
   still the work of its author, and their copyright notice is in
   [NOTICE](NOTICE).
 
+## Benchmark
+
+`midopress bench DIR` recodes every image in a directory for each client and
+profile, measures the similarity of every result with its own metric, and
+decodes the output again separately to check it. `go run ./tools/fetch-images`
+downloads the corpus used here (62 images: 25 JPEG photographs as web servers
+deliver them, 29 PNG photographs, 6 graphics and 2 animated GIFs; the images are
+not part of the repository). Balanced profile, WebAssembly codecs, one machine
+with 20 threads:
+
+| client accepts | photos (JPEG) | photos (PNG) | graphics | whole corpus | lowest similarity |
+|---|---:|---:|---:|---:|---:|
+| JPEG only | 28.8% | 82.4% | 0.9% | 59.3% | 0.9750 |
+| WebP | 27.0% | 82.8% | 64.1% | 61.0% | 0.9751 |
+| JPEG XL, AVIF, WebP | 36.4% | 85.9% | 54.0% | 65.6% | 0.9751 |
+
+Saver gets 67% to 74% over the whole corpus and extreme 80% to 86%; see
+[CHANGELOG](CHANGELOG.md). Recoding a JPEG that is already well compressed saves
+much less than recoding a PNG photograph, which is why the first column is lower:
+the honest number for web JPEGs at the balanced profile is 27% to 36%. Two JPEG
+photographs carry a wide-gamut colour profile and are left as they are.
+
 ## Credits
 
-Barna Csorogi wrote compy. The codecs come from
-[go-libjpeg](https://github.com/pixiv/go-libjpeg),
-[webp](https://github.com/chai2010/webp),
+Barna Csorogi wrote compy. The image codecs come from
+[gen2brain](https://github.com/gen2brain) (libwebp, libavif, libjxl and jpegli
+compiled to WebAssembly) run with [wazero](https://wazero.io),
+fonts are repackaged with [tdewolff/font](https://github.com/tdewolff/font),
 [brotli](https://github.com/andybalholm/brotli) and
 [klauspost/compress](https://github.com/klauspost/compress), and minification
 from [tdewolff/minify](https://github.com/tdewolff/minify).

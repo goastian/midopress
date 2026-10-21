@@ -31,6 +31,51 @@ closed, and the status of every one is listed there.
   `log.urls` is set.
 - The text of the stats page and the exit message changed.
 
+### Added (phase 2: modern codecs)
+
+- **Images are recoded against a measured quality.** `internal/img` picks the
+  best format the browser accepts (JPEG XL, AVIF, WebP, jpegli JPEG, optimized
+  PNG), searches the lowest quality that keeps a similarity (SSIM) of 0.975 with
+  the original, decodes the result again to check it, and sends the original
+  unless it is at least 2% smaller. No cgo: the codecs are WebAssembly, and use
+  the native libwebp, libavif and libjxl when they are installed.
+- **Profiles**: `lossless`, `balanced` (default), `saver`, `extreme`, with
+  `pipeline.profile`, `-profile`, the `X-MidoPress-Profile` header, and
+  `Save-Data: on` raising balanced to saver. Saver and extreme shrink big
+  images to the screen using `Sec-CH-Viewport-Width`, `Sec-CH-DPR` or
+  `X-MidoPress-Viewport`.
+- **PNG**: lossless optimization in pure Go (palette, bit depth, filters,
+  deflate), conversion to lossless WebP or JPEG XL when smaller, 256-colour
+  quantization in `extreme`, and alpha dropped when opaque.
+- **Animated GIF becomes animated WebP**; animated PNG is left alone.
+- **Metadata**: EXIF orientation is applied to the pixels, ICC profiles that are
+  not sRGB are kept (and the image is not recoded), the rest is removed.
+- **Fonts**: TTF, OTF and WOFF become WOFF2 for browsers loading a font.
+- **Minification** by kind and mode (`pipeline.text.minify`), safe by default;
+  `-minify` turns on HTML, CSS and JavaScript in safe mode.
+- **Cache and background work**: results are kept by content, and what does not
+  fit in `pipeline.image.timeout` is finished in the background, so the next
+  request gets the best one. Slower brotli levels for responses that look
+  cacheable.
+- **`midopress bench`** and `tools/fetch-images`.
+- CI, release and Docker build without C libraries; Windows is a normal target.
+  `docker build --build-arg NATIVE_CODECS=1` adds the native codec libraries.
+
+Behavior changes of this phase:
+
+- The default image quality is no longer a fixed JPEG 50: it is searched for each
+  image against the profile. `-jpeg N` fixes it; `-jpeg 0` still disables JPEG.
+- `pipeline.text.minify` is a map (`html`, `css`, `js`, `svg`, `json`); a plain
+  `true` or `false` still works. CSS, HTML, SVG and JSON are minified by default
+  in safe mode, JavaScript is not. Minifying breaks Subresource Integrity.
+- `pipeline.text.brotli`, `gzip` and `zstd` default to 0, the level of the
+  profile.
+- Animated GIFs are no longer left alone for clients that accept WebP.
+- Images get `Vary: Accept, Save-Data`.
+
+Not done in this phase: lossless JPEG to JPEG XL, which needs libjxl bindings,
+and the optional libvips backend.
+
 ### Added
 
 - **WebSockets and tunnels**: `Upgrade` requests are relayed, and every
@@ -98,6 +143,7 @@ closed, and the status of every one is listed there.
 
 ### Removed
 
+- The cgo dependencies `go-libjpeg` and `chai2010/webp`.
 - The `compy` packages `proxy` and `transcoder`, replaced by the ones above.
 - The `datacounter` dependency.
 
