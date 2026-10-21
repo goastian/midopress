@@ -1,0 +1,6 @@
+/midopress
+/dist/
+/artifacts/
+*.crt
+*.key
+/docs/
