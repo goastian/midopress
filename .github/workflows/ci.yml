@@ -47,7 +47,23 @@ jobs:
       - name: Install libjpeg
         run: sudo apt-get update && sudo apt-get install -y libjpeg-dev
       - run: go build ./...
-      - run: go test -race -count=1 ./...
+      - run: go test -race -count=1 -shuffle=on ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the image
+        run: docker build --build-arg VERSION=ci -t midopress:ci .
+      - name: Start it and check that it answers
+        run: |
+          docker run -d --name midopress -p 19999:9999 -e CERTIFICATE_DOMAIN=localhost midopress:ci
+          for i in $(seq 1 20); do
+            if curl -fsk --http1.1 https://localhost:19999/health; then exit 0; fi
+            sleep 1
+          done
+          docker logs midopress
+          exit 1
 
   test-macos:
     runs-on: macos-latest

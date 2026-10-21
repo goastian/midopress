@@ -1,38 +1,22 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime/debug"
-	"sync/atomic"
+	"syscall"
 
-	"github.com/goastian/midopress/internal/proxy"
-	tc "github.com/goastian/midopress/internal/transcoder"
+	"github.com/goastian/midopress/internal/config"
+	"github.com/goastian/midopress/internal/server"
 )
 
 // version is set at release time with -ldflags "-X main.version=...".
 var version = ""
-
-var (
-	host    = flag.String("host", ":9999", "<host:port>")
-	cert    = flag.String("cert", "", "proxy cert path")
-	key     = flag.String("key", "", "proxy cert key path")
-	ca      = flag.String("ca", "", "CA path")
-	caKey   = flag.String("cakey", "", "CA key path")
-	user    = flag.String("user", "", "proxy user name")
-	pass    = flag.String("pass", "", "proxy password")
-	showVer = flag.Bool("version", false, "print version and exit")
-
-	brotli = flag.Int("brotli", 6, "Brotli compression level (0-11)")
-	jpeg   = flag.Int("jpeg", 50, "jpeg quality (1-100, 0 to disable)")
-	gif    = flag.Bool("gif", true, "transcode gifs into static images")
-	gzip   = flag.Int("gzip", 6, "gzip compression level (0-9)")
-	png    = flag.Bool("png", true, "transcode png")
-	minify = flag.Bool("minify", false, "minify css/html/js - WARNING: tends to break the web")
-)
 
 func buildVersion() string {
 	if version != "" {
@@ -44,89 +28,221 @@ func buildVersion() string {
 	return "dev"
 }
 
+const usage = `usage: midopress [flags]
+       midopress config check [flags]
+       midopress ca init|export [flags]
+       midopress device add|list|revoke -file devices.json [flags]
+       midopress version
+
+With no subcommand it runs the proxy. Run a subcommand with -h for its flags.
+`
+
 func main() {
-	flag.Parse()
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Environ()))
+}
 
-	if *showVer {
-		fmt.Println("midopress", buildVersion())
-		return
-	}
-
-	p := proxy.New(*host, *cert)
-
-	if (*ca == "") != (*caKey == "") {
-		log.Fatalln("must specify both CA certificate and key")
-	}
-
-	if (*cert == "") != (*key == "") {
-		log.Fatalln("must specify both certificate and key")
-	}
-
-	if *ca != "" {
-		if err := p.EnableMitm(*ca, *caKey); err != nil {
-			fmt.Println("not using mitm:", err)
+func run(args []string, stdout, stderr io.Writer, environ []string) int {
+	if len(args) > 0 && len(args[0]) > 0 && args[0][0] != '-' {
+		switch args[0] {
+		case "serve":
+			return cmdServe(args[1:], stdout, stderr, environ)
+		case "config":
+			return cmdConfig(args[1:], stdout, stderr, environ)
+		case "ca":
+			return cmdCA(args[1:], stdout, stderr)
+		case "device":
+			return cmdDevice(args[1:], stdout, stderr)
+		case "version":
+			_, _ = fmt.Fprintln(stdout, "midopress", buildVersion())
+			return 0
+		case "help":
+			_, _ = fmt.Fprint(stdout, usage)
+			return 0
+		default:
+			_, _ = fmt.Fprintf(stderr, "midopress: unknown command %q\n\n%s", args[0], usage)
+			return 2
 		}
 	}
+	return cmdServe(args, stdout, stderr, environ)
+}
 
-	// TODO: require cert and key?
-	if (*user == "") != (*pass == "") {
-		log.Fatalln("must specify both user and pass")
-	} else {
-		p.SetAuthentication(*user, *pass)
-	}
+// serveFlags holds the flags of the proxy. The first group is what compy
+// had; they keep working and override the configuration file.
+type serveFlags struct {
+	fs *flag.FlagSet
 
-	if *jpeg != 0 {
-		p.AddTranscoder("image/jpeg", tc.NewJpeg(*jpeg))
-	}
-	if *gif {
-		p.AddTranscoder("image/gif", &tc.Gif{})
-	}
-	if *png {
-		p.AddTranscoder("image/png", &tc.Png{})
-	}
+	configPath string
+	host       string
+	cert, key  string
+	ca, caKey  string
+	user, pass string
+	brotli     int
+	jpeg       int
+	gif        bool
+	gzip       int
+	png        bool
+	minify     bool
 
-	var ttc proxy.Transcoder
-	if *minify {
-		ttc = &tc.Zip{
-			Transcoder:             tc.NewMinifier(),
-			BrotliCompressionLevel: *brotli,
-			GzipCompressionLevel:   *gzip,
-			SkipCompressed:         false,
+	logLevel    string
+	logFormat   string
+	logURLs     bool
+	blockGlobal bool
+	version     bool
+}
+
+func newServeFlags(name string, stderr io.Writer) *serveFlags {
+	f := &serveFlags{fs: flag.NewFlagSet(name, flag.ContinueOnError)}
+	f.fs.SetOutput(stderr)
+	fs := f.fs
+	fs.StringVar(&f.configPath, "config", "", "path of the YAML configuration file")
+	fs.StringVar(&f.host, "host", ":9999", "<host:port> to listen on")
+	fs.StringVar(&f.cert, "cert", "", "proxy cert path")
+	fs.StringVar(&f.key, "key", "", "proxy cert key path")
+	fs.StringVar(&f.ca, "ca", "", "CA path")
+	fs.StringVar(&f.caKey, "cakey", "", "CA key path")
+	fs.StringVar(&f.user, "user", "", "proxy user name")
+	fs.StringVar(&f.pass, "pass", "", "proxy password")
+	fs.IntVar(&f.brotli, "brotli", 6, "Brotli compression level (0-11)")
+	fs.IntVar(&f.jpeg, "jpeg", 50, "jpeg quality (1-100, 0 to disable)")
+	fs.BoolVar(&f.gif, "gif", true, "recode static gifs, animated ones are never touched")
+	fs.IntVar(&f.gzip, "gzip", 6, "gzip compression level (0-9)")
+	fs.BoolVar(&f.png, "png", true, "recode png")
+	fs.BoolVar(&f.minify, "minify", false, "minify css/html/js - WARNING: tends to break the web")
+	fs.StringVar(&f.logLevel, "log-level", "info", "log level: debug, info, warn or error")
+	fs.StringVar(&f.logFormat, "log-format", "text", "log format: text or json")
+	fs.BoolVar(&f.logURLs, "log-urls", false, "log request URLs (off by default for privacy)")
+	fs.BoolVar(&f.blockGlobal, "block-global", true, "only accept clients on private or loopback addresses")
+	fs.BoolVar(&f.version, "version", false, "print version and exit")
+	return f
+}
+
+// load builds the configuration: defaults, file, environment, then the flags
+// that were given explicitly.
+func (f *serveFlags) load(environ []string) (*config.Config, error) {
+	cfg, err := config.Load(f.configPath, environ)
+	if err != nil {
+		return nil, err
+	}
+	f.fs.Visit(func(fl *flag.Flag) {
+		switch fl.Name {
+		case "host":
+			cfg.Listen.Addr = f.host
+		case "cert":
+			cfg.Listen.TLS.Cert = f.cert
+		case "key":
+			cfg.Listen.TLS.Key = f.key
+		case "ca":
+			cfg.MITM.CACert = f.ca
+		case "cakey":
+			cfg.MITM.CAKey = f.caKey
+		case "user":
+			cfg.Auth.User = f.user
+			if cfg.Auth.Mode == "none" {
+				cfg.Auth.Mode = "basic"
+			}
+		case "pass":
+			cfg.Auth.Pass = f.pass
+			if cfg.Auth.Mode == "none" {
+				cfg.Auth.Mode = "basic"
+			}
+		case "brotli":
+			cfg.Pipeline.Text.Brotli = f.brotli
+		case "gzip":
+			cfg.Pipeline.Text.Gzip = f.gzip
+		case "jpeg":
+			cfg.Pipeline.Image.JPEGQuality = f.jpeg
+		case "gif":
+			cfg.Pipeline.Image.GIF = f.gif
+		case "png":
+			cfg.Pipeline.Image.PNG = f.png
+		case "minify":
+			cfg.Pipeline.Text.Minify = f.minify
+		case "log-level":
+			cfg.Log.Level = f.logLevel
+		case "log-format":
+			cfg.Log.Format = f.logFormat
+		case "log-urls":
+			cfg.Log.URLs = f.logURLs
+		case "block-global":
+			cfg.Auth.BlockGlobal = f.blockGlobal
 		}
-	} else {
-		ttc = &tc.Zip{
-			Transcoder:             &tc.Identity{},
-			BrotliCompressionLevel: *brotli,
-			GzipCompressionLevel:   *gzip,
-			SkipCompressed:         true,
+	})
+	return cfg, nil
+}
+
+func newLogger(cfg config.Log, w io.Writer) *slog.Logger {
+	var level slog.Level
+	_ = level.UnmarshalText([]byte(cfg.Level))
+	opts := &slog.HandlerOptions{Level: level}
+	if cfg.Format == "json" {
+		return slog.New(slog.NewJSONHandler(w, opts))
+	}
+	return slog.New(slog.NewTextHandler(w, opts))
+}
+
+func cmdServe(args []string, stdout, stderr io.Writer, environ []string) int {
+	f := newServeFlags("midopress", stderr)
+	if err := f.fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
 		}
+		return 2
+	}
+	if f.version {
+		_, _ = fmt.Fprintln(stdout, "midopress", buildVersion())
+		return 0
+	}
+	cfg, err := f.load(environ)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "midopress:", err)
+		return 1
+	}
+	if err := server.Check(cfg); err != nil {
+		_, _ = fmt.Fprintln(stderr, "midopress: invalid configuration:")
+		_, _ = fmt.Fprintln(stderr, err)
+		return 1
+	}
+	log := newLogger(cfg.Log, stderr)
+
+	srv, err := server.New(cfg, log)
+	if err != nil {
+		log.Error("cannot start", "err", err)
+		return 1
+	}
+	if err := srv.Listen(); err != nil {
+		log.Error("cannot listen", "err", err)
+		return 1
 	}
 
-	p.AddTranscoder("text/css", ttc)
-	p.AddTranscoder("text/html", ttc)
-	p.AddTranscoder("text/javascript", ttc)
-	p.AddTranscoder("application/javascript", ttc)
-	p.AddTranscoder("application/x-javascript", ttc)
-
-	c := make(chan os.Signal, 2)
-	signal.Notify(c, os.Interrupt)
-	go func() {
-		for range c {
-			read := atomic.LoadUint64(&p.ReadCount)
-			written := atomic.LoadUint64(&p.WriteCount)
-			log.Printf("midopress exiting, total transcoded: %d -> %d (%3.1f%%)",
-				read, written, float64(written)/float64(read)*100)
-			os.Exit(0)
-		}
-	}()
-
-	log.Printf("midopress %s listening on %s", buildVersion(), *host)
-
-	var err error
-	if *cert != "" {
-		err = p.StartTLS(*host, *cert, *key)
-	} else {
-		err = p.Start(*host)
+	if cfg.Auth.Mode != "none" && cfg.Listen.TLS.Cert == "" {
+		log.Warn("authentication is on but the proxy does not use TLS: credentials travel unencrypted, set listen.tls")
 	}
-	log.Fatalln(err)
+	if !cfg.Auth.BlockGlobal {
+		log.Warn("auth.block_global is off: clients on public addresses can connect")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	watchReload(ctx, srv, log)
+
+	log.Info("midopress listening",
+		"version", buildVersion(),
+		"addr", srv.Addr().String(),
+		"tls", cfg.Listen.TLS.Cert != "",
+		"mitm", cfg.MITM.Enabled(),
+		"auth", cfg.Auth.Mode,
+		"block_global", cfg.Auth.BlockGlobal,
+	)
+	if err := srv.Run(ctx); err != nil {
+		log.Error("server stopped", "err", err)
+		return 1
+	}
+
+	s := srv.Proxy().Stats()
+	ratio := 0.0
+	if s.BytesIn > 0 {
+		ratio = float64(s.BytesOut) / float64(s.BytesIn) * 100
+	}
+	log.Info("midopress exiting", "requests", s.Requests, "bytes_in", s.BytesIn, "bytes_out", s.BytesOut, "ratio_percent", fmt.Sprintf("%.1f", ratio))
+	return 0
 }

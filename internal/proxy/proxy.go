@@ -1,242 +1,320 @@
+// Package proxy implements the HTTP proxy: request forwarding, CONNECT
+// tunnels, HTTPS interception and WebSocket upgrades.
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
-	"log"
+	"html"
+	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"strings"
+	"strconv"
 	"sync/atomic"
+	"time"
+
+	"github.com/goastian/midopress/internal/auth"
+	"github.com/goastian/midopress/internal/httpx"
+	"github.com/goastian/midopress/internal/mitm"
+	"github.com/goastian/midopress/internal/pipeline"
+	"github.com/goastian/midopress/internal/upstream"
 )
 
+// ErrLoop is returned when a request would be sent to the proxy itself.
+var ErrLoop = errors.New("proxy: request would loop back to the proxy")
+
+// Options configures a Proxy.
+type Options struct {
+	Auth     *auth.Authenticator
+	Upstream *upstream.Client
+	Pipeline *pipeline.Pipeline
+
+	// Issuer and Policy enable HTTPS interception. Without them every CONNECT
+	// request becomes a plain tunnel.
+	Issuer    *mitm.Issuer
+	Policy    *mitm.Policy
+	CACertPEM []byte
+
+	// IsLocal reports whether a host:port names the proxy itself.
+	IsLocal func(hostport string) bool
+
+	Logger           *slog.Logger
+	LogURLs          bool
+	HandshakeTimeout time.Duration
+}
+
+// Proxy is the HTTP handler. Use Handler for the listener clients connect to
+// and MITMListener with MITMHandler for the connections it decrypts.
 type Proxy struct {
-	transcoders map[string]Transcoder
-	ml          *mitmListener
-	ReadCount   uint64
-	WriteCount  uint64
-	user        string
-	pass        string
-	host        string
-	cert        string
+	opts    Options
+	log     *slog.Logger
+	ml      *connListener
+	tunnels tunnelSet
+	tlsConf *tls.Config
+	closing atomic.Bool
+
+	requests     atomic.Uint64
+	inflight     atomic.Int64
+	bytesIn      atomic.Uint64
+	bytesOut     atomic.Uint64
+	upstreamErrs atomic.Uint64
+	aborted      atomic.Uint64
+	handshakes   atomic.Uint64
+	handshakeErr atomic.Uint64
+	autoMarked   atomic.Uint64
+	denied       atomic.Uint64
 }
 
-type Transcoder interface {
-	Transcode(*ResponseWriter, *ResponseReader, http.Header) error
-}
-
-func New(host string, cert string) *Proxy {
-	p := &Proxy{
-		transcoders: make(map[string]Transcoder),
-		ml:          nil,
-		host:        host,
-		cert:        cert,
+// New returns a Proxy.
+func New(opts Options) *Proxy {
+	if opts.Logger == nil {
+		opts.Logger = slog.New(slog.DiscardHandler)
+	}
+	if opts.HandshakeTimeout <= 0 {
+		opts.HandshakeTimeout = 10 * time.Second
+	}
+	if opts.IsLocal == nil {
+		opts.IsLocal = func(string) bool { return false }
+	}
+	p := &Proxy{opts: opts, log: opts.Logger, ml: newConnListener()}
+	if opts.Issuer != nil {
+		p.tlsConf = opts.Issuer.TLSConfig(func(h *tls.ClientHelloInfo) string {
+			if hc, ok := h.Conn.(*hostConn); ok {
+				return hc.host
+			}
+			return ""
+		})
 	}
 	return p
 }
 
-func (p *Proxy) EnableMitm(ca, key string) error {
-	cf, err := newCertFaker(ca, key)
+// Handler returns the handler for connections made by clients.
+func (p *Proxy) Handler() http.Handler { return http.HandlerFunc(p.serve) }
+
+// MITMHandler returns the handler for requests found inside intercepted TLS
+// connections.
+func (p *Proxy) MITMHandler() http.Handler { return http.HandlerFunc(p.serveMITM) }
+
+// MITMListener returns the listener that yields the decrypted connections.
+func (p *Proxy) MITMListener() net.Listener { return p.ml }
+
+// Stop makes the proxy refuse new tunnels and stop handing connections to the
+// interception server. It is the first step of a shutdown.
+func (p *Proxy) Stop() {
+	p.closing.Store(true)
+	_ = p.ml.Close()
+}
+
+// Wait waits for the open tunnels to finish, closing them when ctx ends, and
+// then drops the idle connections to origin servers. Call it after the HTTP
+// servers have been shut down, so that requests that were in flight have
+// returned their connections.
+func (p *Proxy) Wait(ctx context.Context) {
+	p.tunnels.shutdown(ctx)
+	p.opts.Upstream.CloseIdleConnections()
+}
+
+// Stats is a snapshot of the proxy counters.
+type Stats struct {
+	Requests         uint64
+	InFlight         int64
+	BytesIn          uint64
+	BytesOut         uint64
+	UpstreamErrors   uint64
+	Aborted          uint64
+	Denied           uint64
+	Tunnels          uint64
+	TunnelsActive    int64
+	TLSHandshakes    uint64
+	TLSHandshakeErrs uint64
+	AutoPassthrough  uint64
+	Reasons          [pipeline.NumReasons]uint64
+}
+
+// Stats returns the current counters.
+func (p *Proxy) Stats() Stats {
+	return Stats{
+		Requests:         p.requests.Load(),
+		InFlight:         p.inflight.Load(),
+		BytesIn:          p.bytesIn.Load(),
+		BytesOut:         p.bytesOut.Load(),
+		UpstreamErrors:   p.upstreamErrs.Load(),
+		Aborted:          p.aborted.Load(),
+		Denied:           p.denied.Load(),
+		Tunnels:          p.tunnels.total.Load(),
+		TunnelsActive:    p.tunnels.active.Load(),
+		TLSHandshakes:    p.handshakes.Load(),
+		TLSHandshakeErrs: p.handshakeErr.Load(),
+		AutoPassthrough:  p.autoMarked.Load(),
+		Reasons:          p.opts.Pipeline.Stats(),
+	}
+}
+
+func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
+	// A client of an HTTP/1.1 proxy always sends the absolute URI, so a request
+	// in origin form is someone visiting the proxy itself: a person with a
+	// browser or a health check, who may reach it under any name or port
+	// (a NAT, a published container port). Only HTTP/2 uses the origin form to
+	// ask a proxy for another host, with the target in :authority.
+	directVisit := !r.URL.IsAbs() && r.Method != http.MethodConnect &&
+		(r.ProtoMajor == 1 || r.Host == "" || p.opts.IsLocal(r.Host))
+
+	if directVisit && r.Method == http.MethodGet && r.URL.Path == "/health" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
+		return
+	}
+
+	if d := p.opts.Auth.Check(r.RemoteAddr, r.Header.Get("Proxy-Authorization")); !d.Allowed {
+		p.denied.Add(1)
+		switch d.Status {
+		case http.StatusProxyAuthRequired:
+			w.Header().Set("Proxy-Authenticate", d.Challenge)
+		case http.StatusTooManyRequests:
+			w.Header().Set("Retry-After", strconv.Itoa(int(d.RetryAfter.Seconds())))
+		}
+		w.WriteHeader(d.Status)
+		return
+	}
+
+	switch {
+	case r.Method == http.MethodConnect:
+		p.handleConnect(w, r)
+	case r.URL.IsAbs():
+		if p.opts.IsLocal(r.URL.Host) {
+			p.handleLocal(w, r)
+			return
+		}
+		p.forward(w, r)
+	case directVisit:
+		p.handleLocal(w, r)
+	default:
+		// HTTP/2 request in origin form for another host.
+		r.URL.Scheme = "http"
+		r.URL.Host = r.Host
+		p.forward(w, r)
+	}
+}
+
+// serveMITM handles a request that arrived through an intercepted tunnel. The
+// client was authenticated when it opened the tunnel.
+func (p *Proxy) serveMITM(w http.ResponseWriter, r *http.Request) {
+	if r.Host == "" {
+		http.Error(w, "missing Host header", http.StatusBadRequest)
+		return
+	}
+	r.URL.Scheme = "https"
+	r.URL.Host = r.Host
+	p.forward(w, r)
+}
+
+// forward sends the request upstream and writes the response back.
+func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Scheme != "http" && r.URL.Scheme != "https" {
+		http.Error(w, "unsupported scheme", http.StatusBadRequest)
+		return
+	}
+	p.requests.Add(1)
+	p.inflight.Add(1)
+	defer p.inflight.Add(-1)
+
+	if httpx.IsUpgrade(r.Header) {
+		p.upgrade(w, r)
+		return
+	}
+	httpx.RemoveHopByHop(r.Header)
+	r.RequestURI = ""
+
+	resp, err := p.opts.Upstream.RoundTrip(r)
 	if err != nil {
-		return err
-	}
-
-	var config *tls.Config
-	if p.cert != "" {
-		roots, err := x509.SystemCertPool()
-		if err != nil {
-			return err
-		}
-		pem, err := os.ReadFile(p.cert)
-		if err != nil {
-			return err
-		}
-		ok := roots.AppendCertsFromPEM(pem)
-		if !ok {
-			return errors.New("failed to parse root certificate")
-		}
-		config = &tls.Config{RootCAs: roots}
-	}
-
-	p.ml = newMitmListener(cf, config)
-	go func() {
-		if err := http.Serve(p.ml, p); err != nil {
-			log.Printf("mitm listener stopped: %s", err)
-		}
-	}()
-	return nil
-}
-
-func (p *Proxy) SetAuthentication(user, pass string) {
-	p.user = user
-	p.pass = pass
-}
-
-func (p *Proxy) AddTranscoder(contentType string, transcoder Transcoder) {
-	p.transcoders[contentType] = transcoder
-}
-
-func (p *Proxy) Start(host string) error {
-	return http.ListenAndServe(host, p)
-}
-
-func (p *Proxy) StartTLS(host, cert, key string) error {
-	return http.ListenAndServeTLS(host, cert, key, p)
-}
-
-func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Printf("serving request: %s", r.URL)
-	if err := p.handle(w, r); err != nil {
-		log.Printf("%s while serving request: %s", err, r.URL)
-	}
-}
-
-func (p *Proxy) checkHttpBasicAuth(auth string) bool {
-	prefix := "Basic "
-	if !strings.HasPrefix(auth, prefix) {
-		return false
-	}
-	decoded, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
-	if err != nil {
-		return false
-	}
-	values := strings.SplitN(string(decoded), ":", 2)
-	if len(values) != 2 || values[0] != p.user || values[1] != p.pass {
-		return false
-	}
-	return true
-}
-
-func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) error {
-	// TODO: only HTTPS?
-	if p.user != "" {
-		if !p.checkHttpBasicAuth(r.Header.Get("Proxy-Authorization")) {
-			w.Header().Set("Proxy-Authenticate", "Basic realm=\"MidoPress\"")
-			w.WriteHeader(http.StatusProxyAuthRequired)
-			return nil
-		}
-		r.Header.Del("Proxy-Authorization")
-	}
-
-	if r.Method == "CONNECT" {
-		return p.handleConnect(w, r)
-	}
-
-	host := r.URL.Host
-	if host == "" {
-		host = r.Host
-	}
-	if hostname, err := os.Hostname(); host == p.host || (err == nil && host == hostname+p.host) {
-		return p.handleLocalRequest(w, r)
-	}
-
-	resp, err := forward(r)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return fmt.Errorf("error forwarding request: %s", err)
+		p.upstreamError(w, r, err)
+		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	user_agent := r.Header.Get("User-Agent")
-	w.Header().Set("User-Agent", user_agent)
-	rw := newResponseWriter(w)
-	rr := newResponseReader(resp)
-	err = p.proxyResponse(rw, rr, r.Header)
-	read := rr.counter.Count()
-	written := rw.rw.Count()
-	log.Printf("transcoded: %d -> %d (%3.1f%%)", read, written, float64(written)/float64(read)*100)
-	atomic.AddUint64(&p.ReadCount, read)
-	atomic.AddUint64(&p.WriteCount, written)
-	return err
+	httpx.RemoveHopByHop(resp.Header)
+
+	out := p.opts.Pipeline.Handle(w, r, resp)
+	p.bytesIn.Add(uint64(out.BytesIn))
+	p.bytesOut.Add(uint64(out.BytesOut))
+	if out.Err == nil {
+		return
+	}
+	p.upstreamErrs.Add(1)
+	if !out.Written {
+		p.writeError(w, http.StatusBadGateway)
+		return
+	}
+	// The response is already partly sent. Ending it normally would make the
+	// client believe it is complete, so the connection is cut instead.
+	p.aborted.Add(1)
+	panic(http.ErrAbortHandler)
 }
 
-func (p *Proxy) handleLocalRequest(w http.ResponseWriter, r *http.Request) error {
-	if r.Method == "GET" && (r.URL.Path == "" || r.URL.Path == "/") {
-		w.Header().Set("Content-Type", "text/html")
-		read := atomic.LoadUint64(&p.ReadCount)
-		written := atomic.LoadUint64(&p.WriteCount)
-		_, err := io.WriteString(w, fmt.Sprintf(`<html>
-<head>
-<title>MidoPress</title>
-</head>
+func (p *Proxy) upstreamError(w http.ResponseWriter, r *http.Request, err error) {
+	p.upstreamErrs.Add(1)
+	status := http.StatusBadGateway
+	kind := "upstream"
+	var ne net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return
+	case errors.Is(err, ErrLoop):
+		status, kind = http.StatusLoopDetected, "loop"
+	case errors.Is(err, upstream.ErrBlockedAddress):
+		status, kind = http.StatusForbidden, "blocked"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
+		status, kind = http.StatusGatewayTimeout, "timeout"
+	}
+	if p.log.Enabled(r.Context(), slog.LevelDebug) {
+		attrs := []any{"kind", kind}
+		if p.opts.LogURLs {
+			attrs = append(attrs, "url", r.URL.String(), "err", err)
+		}
+		p.log.Debug("upstream error", attrs...)
+	}
+	p.writeError(w, status)
+}
+
+func (p *Proxy) writeError(w http.ResponseWriter, status int) {
+	http.Error(w, fmt.Sprintf("%d %s\n", status, http.StatusText(status)), status)
+}
+
+func (p *Proxy) handleLocal(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	switch {
+	case r.Method == http.MethodGet && (r.URL.Path == "" || r.URL.Path == "/"):
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		s := p.Stats()
+		ratio := "n/a"
+		if s.BytesIn > 0 {
+			ratio = fmt.Sprintf("%.1f%%", float64(s.BytesOut)/float64(s.BytesIn)*100)
+		}
+		cert := ""
+		if len(p.opts.CACertPEM) > 0 {
+			cert = `<li><a href="/cacert">CA certificate</a></li>`
+		}
+		_, _ = fmt.Fprintf(w, `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>MidoPress</title></head>
 <body>
 <h1>MidoPress</h1>
 <ul>
-<li>total transcoded: %d -> %d (%3.1f%%)</li>
-<li><a href="/cacert">CA cert</a></li>
-<li><a href="https://github.com/goastian/midopress">GitHub</a></li>
+<li>bytes from origins: %d, sent to clients: %d (%s)</li>
+<li>requests: %d, tunnels: %d</li>
+%s
+<li><a href="%s">Source code</a></li>
 </ul>
 </body>
-</html>`, read, written, float64(written)/float64(read)*100))
-		return err
-	} else if r.Method == "GET" && r.URL.Path == "/cacert" {
-		if p.cert == "" {
-			http.NotFound(w, r)
-			return nil
-		}
-		w.Header().Set("Content-Type", "application/x-x509-ca-cert")
-		http.ServeFile(w, r, p.cert)
-		return nil
-	} else {
-		w.WriteHeader(http.StatusNotImplemented)
-		return nil
+</html>
+`, s.BytesIn, s.BytesOut, html.EscapeString(ratio), s.Requests, s.Tunnels, cert, "https://github.com/goastian/midopress")
+	case r.Method == http.MethodGet && r.URL.Path == "/cacert" && len(p.opts.CACertPEM) > 0:
+		h.Set("Content-Type", "application/x-x509-ca-cert")
+		h.Set("Content-Disposition", `attachment; filename="midopress-ca.crt"`)
+		_, _ = w.Write(p.opts.CACertPEM)
+	default:
+		http.NotFound(w, r)
 	}
-}
-
-func forward(r *http.Request) (*http.Response, error) {
-	if r.URL.Scheme == "" {
-		if r.TLS != nil && r.TLS.ServerName == r.Host {
-			r.URL.Scheme = "https"
-		} else {
-			r.URL.Scheme = "http"
-		}
-	}
-	if r.URL.Host == "" {
-		r.URL.Host = r.Host
-	}
-	r.RequestURI = ""
-	return http.DefaultTransport.RoundTrip(r)
-}
-
-func (p *Proxy) proxyResponse(w *ResponseWriter, r *ResponseReader, headers http.Header) error {
-	w.takeHeaders(r)
-	transcoder, found := p.transcoders[r.ContentType()]
-	if !found {
-		return w.CopyFrom(r)
-	}
-	w.setChunked()
-	if err := transcoder.Transcode(w, r, headers); err != nil {
-		return fmt.Errorf("transcoding error: %s", err)
-	}
-	return nil
-}
-
-func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) error {
-	if p.ml == nil {
-		return fmt.Errorf("CONNECT received but mitm is not enabled")
-	}
-	w.WriteHeader(http.StatusOK)
-	var conn net.Conn
-	if h, ok := w.(http.Hijacker); ok {
-		conn, _, _ = h.Hijack()
-	} else {
-		fw := w.(FlushWriter)
-		fw.Flush()
-		mconn := newMitmConn(fw, r.Body, r.RemoteAddr)
-		conn = mconn
-		defer func() {
-			<-mconn.closed
-		}()
-	}
-	sconn, err := p.ml.Serve(conn, r.Host)
-	if err != nil {
-		_ = conn.Close()
-		return err
-	}
-	_ = sconn.Close() // TODO: reuse this connection for https requests
-	return nil
 }

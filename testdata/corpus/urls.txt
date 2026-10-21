@@ -1,0 +1,42 @@
+# URLs recorded into corpus.har by tools/record-corpus. One per line.
+# Static, stable resources of many kinds, mostly from library CDNs and
+# standards bodies. Lines starting with # are ignored.
+https://example.com/
+https://www.iana.org/
+https://www.iana.org/domains/reserved
+https://www.w3.org/TR/PNG/iso_8859-1.txt
+https://www.w3.org/Icons/w3c_home.png
+https://www.w3.org/Icons/valid-xhtml10
+https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js
+https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.js
+https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css
+https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.1/normalize.min.css
+https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/webfonts/fa-brands-400.woff2
+https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js
+https://unpkg.com/react@18.2.0/umd/react.production.min.js
+https://registry.npmjs.org/left-pad
+https://api.github.com/
+https://www.gstatic.com/webp/gallery/1.jpg
+https://www.gstatic.com/webp/gallery/1.webp
+https://www.gstatic.com/webp/gallery/4.jpg
+https://www.gstatic.com/webp/gallery3/1.png
+https://www.gstatic.com/webp/gallery3/2.png
+https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore
+https://raw.githubusercontent.com/golang/go/master/LICENSE
+https://www.rfc-editor.org/rfc/rfc8941.txt
+https://go.dev/robots.txt
+https://go.dev/
+https://go.dev/images/gophers/ladder.svg
+https://go.dev/blog/feed.atom
+https://www.wikipedia.org/
+https://en.wikipedia.org/static/favicon/wikipedia.ico
+https://upload.wikimedia.org/wikipedia/commons/0/02/SVG_logo.svg
+https://www.gnu.org/graphics/gnu-head-mini.png
+https://www.kernel.org/
+https://www.mozilla.org/robots.txt
+https://developer.mozilla.org/robots.txt
+https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css
+https://cdnjs.cloudflare.com/ajax/libs/vue/3.4.15/vue.global.prod.min.js
+https://cdn.jsdelivr.net/npm/htmx.org@1.9.10/dist/htmx.min.js
+https://www.gstatic.com/webp/gallery/2.jpg
+https://www.gnu.org/licenses/gpl-3.0.txt

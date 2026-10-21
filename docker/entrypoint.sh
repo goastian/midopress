@@ -1,10 +1,13 @@
 #!/bin/sh
 # Creates the proxy certificate and the MITM CA the first time the container
 # runs and keeps them in the data volume, so clients only trust the CA once.
+# Everything else is configured with MIDOPRESS_* environment variables, or with
+# a YAML file named by MIDOPRESS_CONFIG.
 set -eu
 
 umask 077
-cd "${MIDOPRESS_DATA:-/var/lib/midopress}"
+data="${MIDOPRESS_DATA:-/var/lib/midopress}"
+cd "$data"
 
 # browsers ignore the CN and look at subjectAltName
 case "$CERTIFICATE_DOMAIN" in
@@ -12,20 +15,20 @@ case "$CERTIFICATE_DOMAIN" in
     *) san="IP:${CERTIFICATE_DOMAIN}" ;;
 esac
 
-gen() {
-    # $1 = base name (cert or ca), $2 = extra openssl arguments
-    if [ -f "$1.crt" ] && [ -f "$1.key" ]; then
-        return
-    fi
-    # shellcheck disable=SC2086
+if [ ! -f cert.crt ] || [ ! -f cert.key ]; then
     openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$1.key" -out "$1.crt" -days 3650 \
-        -subj "/CN=${CERTIFICATE_DOMAIN}" $2
-    echo "generated $1.crt for CN=${CERTIFICATE_DOMAIN}"
-}
+        -keyout cert.key -out cert.crt -days 3650 \
+        -subj "/CN=${CERTIFICATE_DOMAIN}" -addext "subjectAltName=${san}"
+    echo "generated cert.crt for ${CERTIFICATE_DOMAIN}"
+fi
 
-gen cert "-addext subjectAltName=${san}"
-gen ca ""
+if [ ! -f ca.crt ] || [ ! -f ca.key ]; then
+    midopress ca init -dir "$data" -name "MidoPress CA (${CERTIFICATE_DOMAIN})"
+fi
+
+if [ -n "${MIDOPRESS_CONFIG:-}" ]; then
+    set -- -config "$MIDOPRESS_CONFIG" "$@"
+fi
 
 exec midopress -host :9999 \
     -cert cert.crt -key cert.key \

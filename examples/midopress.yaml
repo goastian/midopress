@@ -1,0 +1,117 @@
+# MidoPress configuration, with every setting at its default value.
+#
+# Precedence, lowest to highest: these defaults, this file, MIDOPRESS_*
+# environment variables, command line flags. The environment variable of a
+# setting is its path in upper case: pipeline.text.brotli is
+# MIDOPRESS_PIPELINE_TEXT_BROTLI. Lists are comma separated there.
+#
+# Check a file without starting the server:
+#   midopress config check -config midopress.yaml
+
+listen:
+  addr: ":9999"
+  # Speak TLS to the clients. Browsers then need a PAC file, see the README.
+  # The certificate is re-read on SIGHUP and when the files change.
+  tls:
+    cert: ""
+    key: ""
+
+# HTTPS interception. Leave ca_cert empty to tunnel HTTPS untouched, which
+# means nothing in it gets compressed. Create a CA with `midopress ca init`.
+mitm:
+  ca_cert: ""
+  ca_key: ""
+  # Lifetime of the certificates made for each site.
+  leaf_ttl: 48h
+  cache_size: 10000
+  # When a client rejects our certificate (a pinned app, or a CA it does not
+  # trust), that host is tunnelled untouched for this long.
+  auto_passthrough_ttl: 6h
+  # Hosts that are never intercepted. Three forms: an exact name, "*.example.com"
+  # for every subdomain, and "~d <regex>" tested against the host name.
+  passthrough: []
+  # A built-in list of banks, government, health, password managers and
+  # Mozilla services that are never intercepted.
+  default_passthrough: true
+
+auth:
+  # none, basic (auth.user and auth.pass) or token (one token per device).
+  mode: none
+  user: ""
+  pass: ""
+  # JSON file managed with `midopress device add|list|revoke`.
+  devices_file: ""
+  # Only accept clients on private, loopback or link-local addresses. To serve
+  # clients on the internet turn this off AND set auth.mode.
+  block_global: true
+  # Wrong credentials allowed per client address within failure_window before
+  # that address is refused for the rest of the window.
+  max_failures: 10
+  failure_window: 1m
+
+upstream:
+  dial_timeout: 10s
+  tls_handshake_timeout: 10s
+  # How long an origin may take to start answering.
+  response_header_timeout: 30s
+  idle_conn_timeout: 1m30s
+  max_idle_conns_per_host: 64
+  dns_cache_ttl: 30s
+  # Refuse to connect to loopback, private and link-local addresses. Turn this
+  # on for a proxy that is open to the internet.
+  deny_private: false
+
+server:
+  read_header_timeout: 10s
+  idle_timeout: 2m
+  tls_handshake_timeout: 10s
+  # On shutdown, how long to wait for requests and tunnels before closing them.
+  shutdown_grace: 30s
+
+pipeline:
+  # A recoded response must be at least this fraction smaller than the original,
+  # otherwise the original is sent.
+  min_gain: 0.02
+  # Image recoding is CPU heavy. 0 means one job per CPU. When all slots stay busy
+  # for transcode_wait, the response is passed through instead of queueing.
+  max_concurrent_transcodes: 0
+  transcode_wait: 250ms
+  # Memory the pipeline may hold in buffers at once. Past it, responses are
+  # passed through. Images also need memory to decode: about 4 bytes per pixel
+  # for each concurrent job.
+  memory_budget: 256MiB
+  text:
+    brotli: 6
+    gzip: 6
+    zstd: 3
+    # Minify HTML, CSS and JavaScript. It can break pages.
+    minify: false
+    # Turn gzip, deflate and zstd responses into brotli when the client accepts
+    # it. Only done for bodies of known size up to buffer_max.
+    recompress: true
+    # Bodies up to this size are buffered, which allows checking that the result
+    # is smaller. Larger ones, and bodies of unknown length, are streamed.
+    buffer_max: 1MiB
+    min_bytes: 256
+    # Largest size a compressed body may expand to.
+    max_decoded: 32MiB
+  image:
+    # 0 leaves JPEG images alone. A client can ask for another quality per
+    # request with the X-MidoPress-Quality header.
+    jpeg_quality: 50
+    png: true
+    # Static GIFs only, animated ones are never touched.
+    gif: true
+    min_bytes: 1KiB
+    max_bytes: 8MiB
+    max_pixels: 16000000
+    # Longest a single image may take to recode.
+    timeout: 3s
+
+log:
+  level: info
+  # text or json
+  format: text
+  # Log request URLs and host names. Off by default: the proxy sees everything
+  # its users browse.
+  urls: false
