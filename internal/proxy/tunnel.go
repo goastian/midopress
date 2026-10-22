@@ -22,6 +22,9 @@ type tunnelSet struct {
 	wg     sync.WaitGroup
 	active atomic.Int64
 	total  atomic.Uint64
+	// bytes that went through tunnels, untouched: up is from the client
+	up   atomic.Uint64
+	down atomic.Uint64
 }
 
 func (s *tunnelSet) add(conns ...net.Conn) bool {
@@ -98,19 +101,20 @@ func (s *tunnelSet) tunnel(client, upstream net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		pump(upstream, client)
+		pump(upstream, client, &s.up)
 	}()
 	go func() {
 		defer wg.Done()
-		pump(client, upstream)
+		pump(client, upstream, &s.down)
 	}()
 	wg.Wait()
 }
 
 // pump copies src to dst, then passes the end of the stream on to dst.
-func pump(dst, src net.Conn) {
+func pump(dst, src net.Conn, count *atomic.Uint64) {
 	bp := tunnelBuffers.Get().(*[]byte)
-	_, err := io.CopyBuffer(dst, src, *bp)
+	n, err := io.CopyBuffer(dst, src, *bp)
+	count.Add(uint64(n))
 	tunnelBuffers.Put(bp)
 	if err != nil {
 		_ = dst.Close()

@@ -3,7 +3,7 @@ import { toasts } from '../composables/toast'
 </script>
 
 <template>
-  <div class="toasts" aria-live="polite">
+  <div class="toasts" aria-live="polite" role="status">
     <div v-for="t in toasts" :key="t.id" class="toast" :class="t.kind">{{ t.text }}</div>
   </div>
 </template>
@@ -12,33 +12,40 @@ import { toasts } from '../composables/toast'
 .toasts {
   position: fixed;
   right: 1rem;
-  bottom: calc(1rem + env(safe-area-inset-bottom));
+  bottom: calc(var(--statusbar-h) + 0.75rem);
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.4rem;
   z-index: 100;
   max-width: min(420px, calc(100vw - 2rem));
 }
 .toast {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
-  border-radius: var(--radius-sm);
-  padding: 0.65rem 0.9rem;
-  box-shadow: var(--shadow);
-  font-size: 0.9rem;
+  background: var(--ink);
+  color: var(--inverse);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.8rem;
+  font-size: var(--fs-sm);
 }
 .toast.err {
-  border-left-color: var(--danger);
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--rule-strong);
+  border-left: 3px solid var(--vermilion);
 }
-.toast.info {
-  border-left-color: var(--info);
+@media (prefers-reduced-motion: no-preference) {
+  .toast {
+    animation: in 0.18s ease-out;
+  }
+  @keyframes in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
 }
-@media (max-width: 860px) {
+@media (max-width: 720px) {
   .toasts {
-    bottom: calc(var(--bottom-nav-h) + 0.75rem + env(safe-area-inset-bottom));
-    right: 0.75rem;
-    left: 0.75rem;
+    left: 1rem;
     max-width: none;
   }
 }

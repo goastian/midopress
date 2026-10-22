@@ -33,7 +33,7 @@ func (s *Server) snapshot() StatsSnapshot {
 		},
 		Connections: connectionsView{
 			ClientsActive: s.d.Collector.ActiveClients(activeWindow), RequestsInFlight: ps.InFlight,
-			TunnelsActive: ps.TunnelsActive, TunnelsTotal: ps.Tunnels, TLSHandshakes: ps.TLSHandshakes,
+			TunnelsActive: ps.TunnelsActive, TunnelsTotal: ps.Tunnels, TunnelBytesUp: ps.TunnelBytesUp, TunnelBytesDown: ps.TunnelBytesDown, TLSHandshakes: ps.TLSHandshakes,
 			TLSHandshakeErrors: ps.TLSHandshakeErrs, UpstreamErrors: ps.UpstreamErrors, Denied: ps.Denied,
 		},
 		CPU: cpuView{Slots: slots, Busy: busy, BackgroundQueue: queued},

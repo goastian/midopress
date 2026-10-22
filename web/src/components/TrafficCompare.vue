@@ -99,88 +99,83 @@ const verdict = computed(() => {
 
 <template>
   <section class="cmp">
-    <h3>Compare</h3>
+    <div class="sec-head">
+      <h3>Comparison</h3>
+      <span v-if="keep && !loading && !error" class="seg" role="group" aria-label="View">
+        <button type="button" :aria-pressed="mode === 'slider'" @click="mode = 'slider'">Slider</button>
+        <button type="button" :aria-pressed="mode === 'side'" @click="mode = 'side'">Side by side</button>
+      </span>
+    </div>
     <p v-if="!keep" class="muted small">
       The bodies of this image were not kept: image capture was off when it passed, or it was over the capture limit. Turn on "Keep
-      images" in the toolbar to keep the next ones, in memory only.
+      images" at the top of Traffic to keep the next ones, in memory only.
     </p>
-    <p v-else-if="loading" class="muted small">Loading images...</p>
+    <div v-else-if="loading" class="skeleton" role="status" aria-label="Loading images"><i /><i /><i /></div>
     <p v-else-if="error" class="bad small">{{ error }}</p>
     <template v-else>
-      <div class="bar">
-        <div class="seg" role="group" aria-label="View">
-          <button :class="{ on: mode === 'slider' }" :aria-pressed="mode === 'slider'" @click="mode = 'slider'">Slider</button>
-          <button :class="{ on: mode === 'side' }" :aria-pressed="mode === 'side'" @click="mode = 'side'">Side by side</button>
-        </div>
-      </div>
-
       <div v-if="mode === 'slider'" ref="stage" class="stage" :style="ratioStyle" @pointerdown="down" @pointermove="drag">
         <img :src="after" alt="Sent to the client" draggable="false" />
         <img :src="before" alt="Original" draggable="false" class="top" :style="{ clipPath: `inset(0 ${100 - pos}% 0 0)` }" @load="loaded" />
-        <span class="tag l">Original</span>
-        <span class="tag r">Sent</span>
+        <span class="tag l mono">Original {{ bytes(origBytes) }}</span>
+        <span class="tag r mono">Sent {{ bytes(resBytes) }}<template v-if="saved > 0"> -{{ percent(saved, 0) }}</template></span>
         <div
           class="handle"
           role="slider"
           tabindex="0"
-          aria-label="Original versus sent"
+          aria-label="Divider between original and sent"
           aria-valuemin="0"
           aria-valuemax="100"
           :aria-valuenow="Math.round(pos)"
           :style="{ left: pos + '%' }"
           @keydown="key"
         >
-          <span class="grip" />
+          <span class="line" />
+          <span class="knob">
+            <svg width="16" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 2 1 6l4 4M11 2l4 4-4 4" /></svg>
+          </span>
         </div>
       </div>
       <div v-else class="side">
         <figure>
-          <figcaption class="muted small">Original</figcaption>
+          <figcaption class="mono xs"><b>Original</b> <span class="muted">{{ bytes(origBytes) }} {{ flow.content_type }}</span></figcaption>
           <img :src="before" alt="Original" @load="loaded" />
         </figure>
         <figure>
-          <figcaption class="muted small">Sent</figcaption>
+          <figcaption class="mono xs"><b>Sent</b> <span class="muted">{{ bytes(resBytes) }} {{ sentType }}</span> <span v-if="saved > 0" class="ok">-{{ percent(saved, 0) }}</span></figcaption>
           <img :src="after" alt="Sent to the client" />
         </figure>
       </div>
 
-      <dl class="sizes mono">
-        <div><dt>Original</dt><dd>{{ bytes(origBytes) }} <span class="muted">{{ flow.content_type }}</span></dd></div>
-        <div><dt>Sent</dt><dd>{{ bytes(resBytes) }} <span class="muted">{{ sentType }}</span> <span v-if="saved > 0" class="ok">-{{ percent(saved) }}</span></dd></div>
-        <div v-if="cmp?.width"><dt>Dimensions</dt><dd>{{ cmp.width }} x {{ cmp.height }}</dd></div>
-        <div v-if="cmp?.comparable">
-          <dt>DSSIM</dt>
-          <dd>{{ distance(cmp.distance) }} <span class="muted sans">{{ verdict }}</span></dd>
-        </div>
-      </dl>
-      <p v-if="cmp && !cmp.comparable" class="muted small">The pictures differ in size, so the distance could not be computed.</p>
+      <p v-if="cmp?.comparable" class="verdict">
+        <span class="mono">DSSIM {{ distance(cmp.distance) }}</span>
+        <span :class="cmp.distance <= 0.005 ? 'ok' : cmp.distance > 0.01 ? 'bad' : ''">{{ verdict }}</span>
+        <span v-if="cmp.width" class="mono muted">{{ cmp.width }} x {{ cmp.height }}</span>
+      </p>
+      <p v-else-if="cmp" class="muted small">The pictures differ in size, so the distance could not be computed.</p>
       <p v-else-if="cmpError" class="muted small">Distance not available: {{ cmpError }}</p>
-      <p class="muted small">
-        DSSIM measures structural difference between the two pictures. 0 means identical; around 0.002 can not be told apart by eye; above 0.01
-        the difference is usually visible.
+      <p class="hint">
+        DSSIM measures structural difference. 0 is identical; around 0.002 can not be told apart by eye; above 0.01 the difference is usually visible.
       </p>
     </template>
   </section>
 </template>
 
 <style scoped>
-h3 {
-  font-size: 0.9rem;
-  font-weight: 600;
-  margin-bottom: 0.4rem;
-}
 .cmp {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.6rem;
+}
+.cmp .sec-head {
+  margin-bottom: 0;
 }
 .stage {
   position: relative;
   width: 100%;
-  max-height: 70vh;
+  max-height: 62vh;
   margin: 0 auto;
-  border: 1px solid var(--border);
-  background: repeating-conic-gradient(var(--surface-2) 0 25%, var(--surface) 0 50%) 0 0 / 16px 16px;
+  border: 1px solid var(--rule-strong);
+  background: var(--sunken);
   overflow: hidden;
   touch-action: pan-y;
   cursor: ew-resize;
@@ -196,44 +191,59 @@ h3 {
 }
 .tag {
   position: absolute;
-  top: 6px;
-  font-size: 0.72rem;
-  padding: 0.05rem 0.4rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  top: 8px;
+  padding: 0.1rem 0.45rem;
+  background: var(--paper);
+  color: var(--ink);
+  border-color: var(--ink);
   pointer-events: none;
 }
 .tag.l {
-  left: 6px;
+  left: 8px;
 }
 .tag.r {
-  right: 6px;
+  right: 8px;
 }
 .handle {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 28px;
-  margin-left: -14px;
+  width: 40px;
+  margin-left: -20px;
   display: flex;
   justify-content: center;
+  align-items: center;
   cursor: ew-resize;
   outline: none;
 }
-.grip {
-  width: 2px;
-  height: 100%;
-  background: var(--text);
-  box-shadow: 0 0 0 1px var(--surface);
-}
-.handle:focus-visible .grip {
+.line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
   width: 4px;
-  background: var(--accent);
+  background: var(--ink);
+  border-left: 1px solid var(--paper);
+  border-right: 1px solid var(--paper);
+}
+.knob {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 36px;
+  background: var(--ink);
+  color: var(--inverse);
+  border: 1px solid var(--paper);
+  border-radius: var(--radius-lg);
+}
+.handle:focus-visible .knob {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
 }
 .side {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
+  gap: 0.75rem;
 }
 .side figure {
   margin: 0;
@@ -243,56 +253,22 @@ h3 {
   display: block;
   max-width: 100%;
   max-height: 60vh;
-  margin-top: 0.2rem;
-  border: 1px solid var(--border);
+  margin-top: 0.3rem;
+  border: 1px solid var(--rule-strong);
+}
+.verdict {
+  display: flex;
+  gap: 0.2rem 1rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-size: var(--fs-sm);
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
 }
 @media (max-width: 560px) {
   .side {
     grid-template-columns: minmax(0, 1fr);
   }
-}
-.sizes {
-  margin: 0;
-  font-size: 0.82rem;
-}
-.sizes > div {
-  display: flex;
-  gap: 0.75rem;
-  padding: 0.2rem 0;
-  border-bottom: 1px solid var(--border);
-}
-.sizes dt {
-  width: 6.5rem;
-  flex: none;
-  color: var(--muted);
-}
-.sizes dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.sans {
-  font-family: var(--font);
-}
-.seg {
-  display: inline-flex;
-  border: 1px solid var(--border);
-}
-.seg button {
-  appearance: none;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.82rem;
-  padding: 0.2rem 0.6rem;
-  cursor: pointer;
-}
-.seg button + button {
-  border-left: 1px solid var(--border);
-}
-.seg button.on {
-  background: var(--surface-2);
-  color: var(--text);
 }
 </style>

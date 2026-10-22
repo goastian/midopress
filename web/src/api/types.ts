@@ -53,6 +53,9 @@ export interface ConnectionStats {
   requests_in_flight: number
   tunnels_active: number
   tunnels_total: number
+  /** bytes that went through tunnels without being touched (HTTPS that is not decrypted) */
+  tunnel_bytes_up: number
+  tunnel_bytes_down: number
   tls_handshakes: number
   tls_handshake_errors: number
   upstream_errors: number

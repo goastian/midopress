@@ -73,6 +73,10 @@ func TestConnectTunnel(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, "HELLO THROUGH THE TUNNEL|after-eof", string(got), "half-close must keep the other direction open")
 			assert.GreaterOrEqual(t, h.srv.Proxy().Stats().Tunnels, uint64(1))
+			assert.Eventually(t, func() bool {
+				st := h.srv.Proxy().Stats()
+				return st.TunnelBytesUp == uint64(len("hello through the tunnel")) && st.TunnelBytesDown == uint64(len("HELLO THROUGH THE TUNNEL|after-eof"))
+			}, 2*time.Second, 10*time.Millisecond, "the bytes that went through the tunnel are counted")
 		})
 	}
 

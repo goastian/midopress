@@ -45,8 +45,8 @@ onUnmounted(() => {
       <p class="small">
         A rule matches when its expression is true. Combine atoms with <code>&amp;</code> (and), <code>|</code> (or), <code>!</code> (not) and parentheses. Arguments that contain spaces go in double quotes. Regular expressions are case sensitive except for host, content type and method. Rules run in order.
       </p>
-      <div class="table-wrap">
-        <table class="tbl">
+      <div class="ledger-wrap">
+        <table class="ledger">
           <tbody>
             <tr v-for="a in atoms" :key="a[0]">
               <td class="mono nowrap">{{ a[0] }}</td>
@@ -61,9 +61,8 @@ onUnmounted(() => {
   </span>
 </template>
 
-<style scoped src="./PagesOps.css"></style>
 <style scoped>
 .help { position: relative; display: inline-block; }
-.pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; width: min(560px, calc(100vw - 2rem)); max-height: 70vh; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 3px; padding: 0.7rem 0.8rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; width: min(560px, calc(100vw - 2rem)); max-height: 70vh; overflow: auto; background: var(--surface); border: 1px solid var(--rule-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); padding: 0.7rem 0.8rem; display: flex; flex-direction: column; gap: 0.5rem; }
 @media (max-width: 720px) { .pop { position: fixed; left: 1rem; right: 1rem; top: 20vh; width: auto; } }
 </style>

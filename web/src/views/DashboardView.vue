@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { api } from '../api/client'
 import { settings, stats } from '../composables/live'
 import { bytes, count, ms, percent, ratio } from '../composables/format'
@@ -7,6 +8,7 @@ import { toastError } from '../composables/toast'
 import type { Bucket } from '../api/types'
 import DashChart from '../components/DashChart.vue'
 import DashTable, { type DashRow } from '../components/DashTable.vue'
+import UiNum from '../components/UiNum.vue'
 import UiToggle from '../components/UiToggle.vue'
 
 const range = ref<'s' | 'min'>('s')
@@ -46,15 +48,25 @@ const domains = computed<DashRow[]>(() => {
   return d.slice(0, 15).map((x) => ({
     key: x.domain,
     label: x.domain,
-    cells: [count(x.requests), bytes(x.bytes_in), bytes(x.bytes_out)],
+    cells: [count(x.requests), bytes(x.bytes_in), bytes(x.bytes_out), bytes(x.bytes_in - x.bytes_out)],
     bar: (x.bytes_in - x.bytes_out) / max,
-    barText: `${bytes(x.bytes_in - x.bytes_out)}  ${percent(pct(x))}`,
+    barText: percent(pct(x), 0),
   }))
 })
 
 const s = computed(() => stats.value)
-const transformedShare = computed(() => (s.value && s.value.totals.requests > 0 ? s.value.totals.transformed / s.value.totals.requests : 0))
+const t = computed(() => s.value?.totals)
+const keptShare = computed(() => (t.value && t.value.bytes_in > 0 ? (t.value.bytes_out / t.value.bytes_in) * 100 : 100))
+const transformedShare = computed(() => (t.value && t.value.requests > 0 ? t.value.transformed / t.value.requests : 0))
 const cacheTotal = computed(() => (s.value ? s.value.cache.hits + s.value.cache.misses : 0))
+
+const latency = computed(() => {
+  const l = s.value?.latency
+  if (!l || !l.samples) return null
+  const top = Math.max(1, l.p99_ms * 1.1)
+  const at = (v: number) => Math.min(100, (v / top) * 100)
+  return { l, p50: at(l.p50_ms), p95: at(l.p95_ms), p99: at(l.p99_ms) }
+})
 
 async function setDomains(on: boolean) {
   busy.value = true
@@ -69,209 +81,273 @@ async function setDomains(on: boolean) {
 </script>
 
 <template>
-  <div class="page dash">
-    <h1>Dashboard</h1>
+  <div class="page">
+    <h1>Overview</h1>
 
-    <div v-if="!s" class="panel muted small">Waiting for the first update...</div>
+    <div v-if="!s || !t" class="skeleton" aria-label="Loading" role="status">
+      <i /><i /><i />
+    </div>
 
     <template v-else>
-      <dl class="strip">
-        <div>
-          <dt>Traffic</dt>
-          <dd class="mono">{{ bytes(s.totals.bytes_in) }} <span class="muted">to</span> {{ bytes(s.totals.bytes_out) }}</dd>
-        </div>
-        <div>
-          <dt>Saved</dt>
-          <dd class="mono ok">{{ bytes(s.totals.saved) }} ({{ percent(s.totals.saved_percent) }})</dd>
-        </div>
-        <div>
-          <dt>Requests</dt>
-          <dd class="mono">{{ count(s.totals.requests) }}</dd>
-        </div>
-        <div>
-          <dt>Transformed</dt>
-          <dd class="mono">{{ count(s.totals.transformed) }} ({{ ratio(transformedShare, 0) }})</dd>
-        </div>
-        <div>
-          <dt>Cache hit rate</dt>
-          <dd class="mono">{{ cacheTotal ? ratio(s.cache.hit_rate) : '-' }}</dd>
-        </div>
-        <div>
-          <dt>Latency p50 / p95 / p99</dt>
-          <dd class="mono">{{ s.latency.samples ? `${ms(s.latency.p50_ms)} / ${ms(s.latency.p95_ms)} / ${ms(s.latency.p99_ms)}` : '-' }}</dd>
-        </div>
-        <div>
-          <dt>In flight</dt>
-          <dd class="mono">{{ s.connections.requests_in_flight }} req, {{ s.connections.clients_active }} clients, {{ s.connections.tunnels_active }} tunnels</dd>
-        </div>
-        <div>
-          <dt>CPU slots busy</dt>
-          <dd class="mono">{{ s.cpu.busy }} / {{ s.cpu.slots }}<span v-if="s.cpu.background_queue" class="muted"> ({{ s.cpu.background_queue }} queued)</span></dd>
-        </div>
-      </dl>
+      <section class="hero" aria-labelledby="hero-line">
+        <p v-if="t.bytes_in === 0" id="hero-line" class="statement">
+          <span class="fig zero"><UiNum :value="0" :format="bytes" /></span>
+          <span class="of">saved so far.</span>
+        </p>
+        <p v-else id="hero-line" class="statement">
+          <span class="fig"><UiNum :value="t.saved" :format="bytes" /></span>
+          <span class="of">
+            saved of <UiNum :value="t.bytes_in" :format="bytes" />, <UiNum :value="t.saved_percent" :format="(n) => percent(n, 0)" />
+          </span>
+        </p>
 
-      <section class="panel">
-        <header>
-          <h2>Throughput</h2>
-          <div class="seg" role="group" aria-label="Chart range">
-            <button :class="{ on: range === 's' }" :aria-pressed="range === 's'" @click="range = 's'">Last 2 min</button>
-            <button :class="{ on: range === 'min' }" :aria-pressed="range === 'min'" @click="range = 'min'">Last 3 h</button>
+        <template v-if="t.bytes_in > 0">
+          <div class="reduction" role="img" :aria-label="`Of ${bytes(t.bytes_in)} received from origins, ${bytes(t.bytes_out)} was sent and ${bytes(t.saved)} saved`">
+            <i class="sent" :style="{ width: keptShare + '%' }" />
+            <i class="gain" :style="{ width: 100 - keptShare + '%' }" />
           </div>
-        </header>
+          <div class="key mono">
+            <span class="k-sent">sent <b>{{ bytes(t.bytes_out) }}</b></span>
+            <span v-if="keptShare >= 28 && keptShare <= 70" class="k-gain" :style="{ left: keptShare + '%' }">saved <b>{{ bytes(t.saved) }}</b></span>
+            <span v-else class="k-gain end">saved <b>{{ bytes(t.saved) }}</b></span>
+          </div>
+        </template>
+        <p v-else class="empty">
+          Nothing has gone through the proxy yet. Open <RouterLink to="/connect">Connect</RouterLink> and paste the address into a device.
+        </p>
+
+        <p class="tally small muted">
+          <span class="mono">{{ count(t.requests) }}</span> requests,
+          <span class="mono">{{ count(t.transformed) }}</span> changed ({{ ratio(transformedShare, 0) }}),
+          cache hit rate <span class="mono">{{ cacheTotal ? ratio(s.cache.hit_rate, 0) : '-' }}</span>
+        </p>
+      </section>
+
+      <section class="sec">
+        <div class="sec-head">
+          <h2>Throughput</h2>
+          <span class="seg" role="group" aria-label="Chart range">
+            <button type="button" :aria-pressed="range === 's'" @click="range = 's'">Last 2 min</button>
+            <button type="button" :aria-pressed="range === 'min'" @click="range = 'min'">Last 3 h</button>
+          </span>
+        </div>
         <DashChart :points="points" :unit="range" />
       </section>
 
       <div class="cols">
-        <section class="panel">
-          <header><h2>By kind</h2></header>
-          <DashTable :head="['Kind', 'Req', 'In', 'Out', 'Saved']" :rows="kinds" />
-        </section>
-        <section class="panel">
-          <header><h2>By codec sent</h2></header>
-          <DashTable :head="['Codec', 'Req', 'In', 'Out', 'Saved']" :rows="codecs" />
-        </section>
-        <section class="panel">
-          <header><h2>By profile</h2></header>
-          <DashTable :head="['Profile', 'Req', 'In', 'Out', 'Saved']" :rows="profiles" />
-        </section>
-        <section class="panel">
-          <header>
-            <h2>Decisions</h2>
-            <span class="muted small">why responses were left alone</span>
-          </header>
-          <DashTable :head="['Decision', 'Responses', 'Share']" :rows="decisions" />
+        <div class="stack-lg">
+          <section class="sec">
+            <div class="sec-head"><h2>By kind</h2></div>
+            <DashTable :head="['Kind', 'Req', 'In', 'Out', 'Saved']" :rows="kinds" :hide-cols="[2]" />
+          </section>
+          <section class="sec">
+            <div class="sec-head"><h2>By codec sent</h2></div>
+            <DashTable :head="['Codec', 'Req', 'In', 'Out', 'Saved']" :rows="codecs" :hide-cols="[2]" />
+          </section>
+        </div>
+        <div class="stack-lg">
+          <section class="sec">
+            <div class="sec-head"><h2>By profile</h2></div>
+            <DashTable :head="['Profile', 'Req', 'In', 'Out', 'Saved']" :rows="profiles" :hide-cols="[2]" />
+          </section>
+          <section class="sec">
+            <div class="sec-head">
+              <h2>Decisions</h2>
+              <span class="sub">why responses were left alone</span>
+            </div>
+            <DashTable :head="['Decision', 'Responses', 'Share']" :rows="decisions" />
+          </section>
+        </div>
+      </div>
+
+      <div class="cols">
+        <div class="stack-lg">
+          <section class="sec">
+            <div class="sec-head">
+              <h2>Latency</h2>
+              <span v-if="latency" class="sub">from {{ count(latency.l.samples) }} responses</span>
+            </div>
+            <template v-if="latency">
+              <p class="pxx mono">
+                <span><span class="muted">p50</span> {{ ms(latency.l.p50_ms) }}</span>
+                <span><span class="muted">p95</span> {{ ms(latency.l.p95_ms) }}</span>
+                <span><span class="muted">p99</span> {{ ms(latency.l.p99_ms) }}</span>
+              </p>
+              <div class="dist" aria-hidden="true">
+                <i class="t p50" :style="{ left: latency.p50 + '%' }" />
+                <i class="t p95" :style="{ left: latency.p95 + '%' }" />
+                <i class="t p99" :style="{ left: latency.p99 + '%' }" />
+              </div>
+            </template>
+            <p v-else class="empty small">No responses measured yet.</p>
+          </section>
+          <section class="sec">
+            <div class="sec-head"><h2>Connections</h2></div>
+            <dl class="dl keep">
+              <dt>In flight</dt><dd class="mono">{{ s.connections.requests_in_flight }} requests</dd>
+              <dt>Clients, last 2 min</dt><dd class="mono">{{ s.connections.clients_active }}</dd>
+              <dt>Tunnels</dt><dd class="mono">{{ s.connections.tunnels_active }} open, {{ count(s.connections.tunnels_total) }} total</dd>
+              <dt>Passed untouched (HTTPS tunnels)</dt><dd class="mono">{{ bytes(s.connections.tunnel_bytes_down) }} down, {{ bytes(s.connections.tunnel_bytes_up) }} up<span class="muted">, not shrunk</span></dd>
+              <dt>TLS handshakes</dt><dd class="mono">{{ count(s.connections.tls_handshakes) }}<span :class="s.connections.tls_handshake_errors ? 'bad' : 'muted'">, {{ count(s.connections.tls_handshake_errors) }} failed</span></dd>
+              <dt>Upstream errors</dt><dd class="mono" :class="{ bad: s.connections.upstream_errors > 0 }">{{ count(s.connections.upstream_errors) }}</dd>
+              <dt>Denied</dt><dd class="mono" :class="{ bad: s.connections.denied > 0 }">{{ count(s.connections.denied) }}</dd>
+              <dt>CPU slots busy</dt><dd class="mono">{{ s.cpu.busy }} of {{ s.cpu.slots }}<span v-if="s.cpu.background_queue" class="muted">, {{ s.cpu.background_queue }} queued</span></dd>
+            </dl>
+          </section>
+        </div>
+        <section class="sec">
+          <div class="sec-head"><h2>Cache</h2></div>
+          <dl class="dl keep">
+            <dt>Memory</dt><dd class="mono">{{ bytes(s.cache.memory_bytes) }} in {{ count(s.cache.memory_items) }} items</dd>
+            <dt>Disk</dt><dd class="mono">{{ bytes(s.cache.disk_bytes) }} in {{ count(s.cache.disk_items) }} items</dd>
+            <dt>Hits and misses</dt><dd class="mono">{{ count(s.cache.hits) }} / {{ count(s.cache.misses) }}</dd>
+            <dt>Evictions</dt><dd class="mono">{{ count(s.cache.evictions) }}</dd>
+            <dt>Expired</dt><dd class="mono">{{ count(s.cache.expired) }}</dd>
+            <dt>Disk errors</dt><dd class="mono" :class="{ bad: s.cache.disk_errors > 0 }">{{ count(s.cache.disk_errors) }}</dd>
+          </dl>
         </section>
       </div>
 
-      <section class="panel">
-        <header>
+      <section class="sec">
+        <div class="sec-head">
           <h2>Top domains by bytes saved</h2>
           <UiToggle :model-value="settings.domains" :disabled="busy" label="Track domains" @update:model-value="setDomains" />
-        </header>
-        <p class="muted small note">Records host names (never paths) in memory while on. Turning it off discards them.</p>
+        </div>
         <DashTable
           v-if="settings.domains && s.top_domains"
-          :head="['Domain', 'Req', 'In', 'Out', 'Saved']"
+          :head="['Domain', 'Req', 'In', 'Out', 'Saved', '%']"
           :rows="domains"
-          empty="No traffic yet."
+          :hide-cols="[2, 3]"
+          empty="No traffic yet. Domains appear here as devices browse."
         />
-        <p v-else class="muted small">Off. Turn it on to see which sites save the most. Counting starts from that moment.</p>
-      </section>
-
-      <section class="panel">
-        <header><h2>Cache</h2></header>
-        <dl class="kv">
-          <div><dt>Memory</dt><dd class="mono">{{ bytes(s.cache.memory_bytes) }} in {{ count(s.cache.memory_items) }} items</dd></div>
-          <div><dt>Disk</dt><dd class="mono">{{ bytes(s.cache.disk_bytes) }} in {{ count(s.cache.disk_items) }} items</dd></div>
-          <div><dt>Hits / misses</dt><dd class="mono">{{ count(s.cache.hits) }} / {{ count(s.cache.misses) }}</dd></div>
-          <div><dt>Evictions</dt><dd class="mono">{{ count(s.cache.evictions) }}</dd></div>
-          <div><dt>Expired</dt><dd class="mono">{{ count(s.cache.expired) }}</dd></div>
-          <div><dt>Disk errors</dt><dd class="mono" :class="{ bad: s.cache.disk_errors > 0 }">{{ count(s.cache.disk_errors) }}</dd></div>
-        </dl>
+        <p v-else class="empty">Tracking is off. Turn it on to see which sites save the most. It records host names, never paths, in memory only, and counting starts from that moment.</p>
       </section>
     </template>
   </div>
 </template>
 
 <style scoped>
-h1 {
-  font-size: 1.1rem;
-  font-weight: 600;
-}
-.dash {
-  gap: 0.8rem;
-}
-.panel {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  padding: 0.6rem 0.8rem 0.7rem;
+.stack-lg {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
   min-width: 0;
 }
-.panel > header {
+.hero {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+.statement {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
   flex-wrap: wrap;
-  margin-bottom: 0.5rem;
+  gap: 0.2rem 1rem;
 }
-h2 {
-  font-size: 0.9rem;
-  font-weight: 600;
-  letter-spacing: 0;
+.fig {
+  font-size: var(--fs-hero);
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--leaf);
+  font-variant-numeric: tabular-nums;
 }
-.strip {
-  margin: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
-  border-top: 1px solid var(--border);
-  border-left: 1px solid var(--border);
-  background: var(--surface);
+.fig .num,
+.of .num {
+  font-family: var(--font-sans);
 }
-.strip > div {
-  padding: 0.4rem 0.7rem 0.5rem;
-  min-width: 0;
-  border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
+.fig.zero {
+  color: var(--ink-2);
 }
-@media (max-width: 700px) {
-  .strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+.of {
+  font-size: var(--fs-xl);
+  line-height: 1.2;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+.reduction {
+  display: flex;
+  height: 14px;
+  margin-top: 0.4rem;
+  background: var(--rule);
+}
+.reduction i {
+  display: block;
+  height: 100%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .reduction i {
+    transition: width 0.3s ease-out;
   }
 }
-dt {
-  color: var(--muted);
-  font-size: 0.78rem;
+.sent {
+  background: var(--ink);
 }
-dd {
-  margin: 0;
-  font-size: 0.9rem;
-  overflow-wrap: anywhere;
+.gain {
+  background: var(--leaf);
 }
-.cols {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
-  gap: 0.8rem;
+.key {
+  position: relative;
+  height: 1.5rem;
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+  margin-top: -0.3rem;
 }
-.note {
-  margin-bottom: 0.4rem;
+.key b {
+  font-weight: 500;
+  color: var(--ink);
 }
-.kv {
-  margin: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  column-gap: 1.5rem;
+.key span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  padding: 0 0.4rem;
 }
-.kv > div {
+.k-sent {
+  left: 0;
+  border-left: 1px solid var(--ink);
+}
+.k-gain {
+  border-left: 1px solid var(--leaf);
+}
+.k-gain.end {
+  right: 0;
+  border-left: 0;
+  border-right: 1px solid var(--leaf);
+}
+.k-gain b {
+  color: var(--leaf);
+}
+.tally {
+  margin-top: 0.4rem;
+}
+.pxx {
   display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 0.25rem 0;
-  border-bottom: 1px solid var(--border);
+  gap: 0.4rem 2rem;
+  flex-wrap: wrap;
+  font-size: var(--fs-md);
+  margin-bottom: 0.7rem;
 }
-.seg {
-  display: inline-flex;
-  border: 1px solid var(--border);
+.dist {
+  position: relative;
+  height: 14px;
+  max-width: 420px;
+  border-bottom: 1px solid var(--rule-strong);
 }
-.seg button {
-  appearance: none;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.82rem;
-  padding: 0.2rem 0.6rem;
-  cursor: pointer;
+.dist .t {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 12px;
+  background: var(--ink);
 }
-.seg button + button {
-  border-left: 1px solid var(--border);
+.dist .p50 {
+  height: 7px;
+  background: var(--ink-2);
 }
-.seg button.on {
-  background: var(--surface-2);
-  color: var(--text);
-}
-.seg button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+.dist .p99 {
+  background: var(--vermilion);
 }
 </style>

@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, ApiFailure, setToken } from '../api/client'
 import { start } from '../composables/live'
+import BrandMark from '../components/BrandMark.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,14 +39,9 @@ onMounted(() => {
 
 <template>
   <div class="login">
-    <form class="card" @submit.prevent="enter(token)">
-      <div class="row">
-        <img src="/favicon.svg" alt="" width="44" height="44" />
-        <div>
-          <h1>MidoPress</h1>
-          <p class="muted small">Administration</p>
-        </div>
-      </div>
+    <form @submit.prevent="enter(token)">
+      <div class="brand"><BrandMark /><span>MidoPress</span></div>
+      <h1>Sign in to the admin panel</h1>
       <div class="field">
         <label for="token">Admin token</label>
         <input id="token" v-model="token" class="input mono" type="password" autocomplete="current-password" autofocus placeholder="paste the token" />
@@ -66,13 +62,23 @@ onMounted(() => {
   display: grid;
   place-items: center;
   padding: 1rem;
-  background: var(--bg);
 }
 form {
-  width: min(400px, 100%);
+  width: min(380px, 100%);
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  padding: 1.4rem;
+  border-top: 2px solid var(--ink);
+  padding-top: 1.25rem;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 600;
+}
+h1 {
+  font-size: var(--fs-xl);
+  line-height: 1.2;
 }
 </style>

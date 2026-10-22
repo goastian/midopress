@@ -47,6 +47,8 @@ type connectionsView struct {
 	RequestsInFlight   int64  `json:"requests_in_flight"`
 	TunnelsActive      int64  `json:"tunnels_active"`
 	TunnelsTotal       uint64 `json:"tunnels_total"`
+	TunnelBytesUp      uint64 `json:"tunnel_bytes_up"`
+	TunnelBytesDown    uint64 `json:"tunnel_bytes_down"`
 	TLSHandshakes      uint64 `json:"tls_handshakes"`
 	TLSHandshakeErrors uint64 `json:"tls_handshake_errors"`
 	UpstreamErrors     uint64 `json:"upstream_errors"`

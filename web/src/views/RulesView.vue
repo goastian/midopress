@@ -37,17 +37,23 @@ const managed = (c: ConfigView) => Object.entries(c.managed_by_ui).filter(([, on
   <div class="page">
     <div class="page-head">
       <div>
-        <h1>Rules and profiles</h1>
-        <p>Decide how each request is handled. Everything saved here applies at once, without a restart.</p>
+        <h1>Policy</h1>
+        <p>Rules and profiles decide how each request is handled. Everything saved here applies at once, without a restart.</p>
       </div>
     </div>
 
-    <div v-if="error && !cfg" class="notice err row between">
+    <div v-if="error && !cfg" class="notice err row">
       <span>{{ error }}</span>
       <button class="btn small" @click="reload">Retry</button>
     </div>
 
+    <div v-else-if="!cfg" class="skeleton" role="status" aria-label="Loading"><i /><i /><i /></div>
+
     <template v-if="cfg">
+      <RulesProfiles :cfg="cfg" @update="update" />
+      <RulesEditor :key="editorKey" :cfg="cfg" @update="update" />
+      <RulesTester :cfg="cfg" />
+
       <section class="sec">
         <div class="sec-head"><h2>Where settings are kept</h2></div>
         <dl class="dl">
@@ -68,10 +74,6 @@ const managed = (c: ConfigView) => Object.entries(c.managed_by_ui).filter(([, on
           <button class="btn small danger" @click="forgetting = true">Forget everything saved from the interface</button>
         </div>
       </section>
-
-      <RulesProfiles :cfg="cfg" @update="update" />
-      <RulesEditor :key="editorKey" :cfg="cfg" @update="update" />
-      <RulesTester :cfg="cfg" />
     </template>
 
     <UiModal v-if="forgetting" title="Forget interface settings" @close="forgetting = false">
@@ -84,7 +86,6 @@ const managed = (c: ConfigView) => Object.entries(c.managed_by_ui).filter(([, on
   </div>
 </template>
 
-<style scoped src="../components/PagesOps.css"></style>
 <style scoped>
 .forget { margin-top: 0.7rem; }
 </style>

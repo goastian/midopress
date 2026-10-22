@@ -20,6 +20,7 @@ const loadError = ref('')
 const paused = ref(false)
 const missed = ref(0)
 const selected = ref<Flow | null>(null)
+const fresh = new Set<string>()
 const busy = ref(false)
 
 let queue: Flow[] = []
@@ -43,6 +44,7 @@ async function load() {
     if (my !== seq) return
     flows.value = r.flows
     total.value = r.total
+    fresh.clear()
     issues.value = []
     loadError.value = ''
     queue = []
@@ -70,9 +72,10 @@ watch(() => settings.value.flows, load)
 function merge(list: Flow[]) {
   if (!list.length) return
   const have = new Set(flows.value.map((f) => f.id))
-  const fresh = list.filter((f) => !have.has(f.id)).reverse()
-  total.value += fresh.length
-  flows.value = [...fresh, ...flows.value].slice(0, CAP)
+  const added = list.filter((f) => !have.has(f.id)).reverse()
+  added.forEach((f) => fresh.add(f.id))
+  total.value += added.length
+  flows.value = [...added, ...flows.value].slice(0, CAP)
 }
 
 function flush() {
@@ -159,7 +162,7 @@ const cursorHint = computed(() => {
 })
 
 function statusClass(s: number) {
-  return s >= 500 ? 'bad' : s >= 400 ? 'warnc' : s >= 300 ? 'muted' : ''
+  return s >= 500 ? 'bad' : s >= 400 ? 'warn' : ''
 }
 function mime(t: string) {
   return t.split(';')[0].trim()
@@ -177,31 +180,28 @@ function open(f: Flow) {
 
 <template>
   <div class="page traffic">
-    <h1>Traffic</h1>
-
-    <div class="switches">
+    <div class="page-head">
       <div>
-        <UiToggle :model-value="settings.flows" :disabled="busy" label="Live list" @update:model-value="setSetting({ flows: $event })" />
-        <p class="muted small">Keeps the last responses, with host and path, in memory only. Off discards them.</p>
+        <h1>Traffic</h1>
+        <p>Every response through the proxy, as it happens. Kept in memory only.</p>
       </div>
-      <div>
+      <div class="switches">
+        <UiToggle :model-value="settings.flows" :disabled="busy" label="Live list" @update:model-value="setSetting({ flows: $event })" />
         <UiToggle :model-value="settings.capture" :disabled="busy" label="Keep images" @update:model-value="setSetting({ capture: $event })" />
-        <p class="muted small">Keeps image bodies in memory to compare before and after. Off discards them.</p>
       </div>
     </div>
 
-    <div v-if="!settings.flows" class="panel empty">
+    <div v-if="!settings.flows" class="off">
       <p><strong>The live list is off.</strong></p>
       <p class="muted">
-        Turning it on records, for each response through the proxy, the method, URL, status, sizes, codec, decision and headers.
-        It lives in memory only and is never written to disk. Values of Authorization and cookies are never stored, and you can
-        empty the list at any time.
+        Turn it on to record, for each response, the method, URL, status, sizes, codec, decision and headers. It lives in memory only and is
+        never written to disk, Authorization and cookie values are never stored, and you can empty the list at any time.
       </p>
-      <button class="btn" :disabled="busy" @click="setSetting({ flows: true })">Turn on the live list</button>
+      <button class="btn primary" :disabled="busy" @click="setSetting({ flows: true })">Turn on the live list</button>
     </div>
 
     <template v-else>
-      <div class="toolbar">
+      <div class="filterbar">
         <div class="grow filterbox">
           <input
             v-model="filter"
@@ -220,13 +220,13 @@ function open(f: Flow) {
             <div v-for="(i, n) in issues" :key="n">{{ i.column ? `column ${i.column}: ` : '' }}{{ i.message }}</div>
           </div>
         </div>
-        <div class="chips" role="group" aria-label="Kind">
-          <button :class="{ on: !kind }" :aria-pressed="!kind" @click="kind = ''">all</button>
-          <button v-for="k in kinds" :key="k" :class="{ on: kind === k }" :aria-pressed="kind === k" @click="kind = kind === k ? '' : k">{{ k }}</button>
-        </div>
+        <span class="seg" role="group" aria-label="Kind">
+          <button type="button" :aria-pressed="!kind" @click="kind = ''">all</button>
+          <button v-for="k in kinds" :key="k" type="button" :aria-pressed="kind === k" @click="kind = kind === k ? '' : k">{{ k }}</button>
+        </span>
         <div class="actions">
           <button v-if="!paused" class="btn small" @click="paused = true">Pause</button>
-          <button v-else class="btn small" @click="resume">Resume<span v-if="missed"> ({{ missed }} new)</span></button>
+          <button v-else class="btn small primary" @click="resume">Resume<span v-if="missed"> ({{ missed }} new)</span></button>
           <button class="btn small" :disabled="!filter && !kind" @click="clearFilters">Clear filter</button>
           <button class="btn small" @click="clearList">Empty list</button>
           <button class="btn small" @click="exportHar">Export HAR</button>
@@ -234,31 +234,33 @@ function open(f: Flow) {
       </div>
 
       <p v-if="loadError" class="error-text">{{ loadError }}</p>
-      <p class="muted small count">
+      <p class="count mono xs muted">
         {{ flows.length }} shown<template v-if="!filtered && !kind"> of {{ total }}</template>
         <template v-if="paused"> - paused</template>
       </p>
 
-      <div v-if="!flows.length" class="panel empty muted">
-        <template v-if="filtered || kind">Nothing matches this filter.</template>
-        <template v-else>Waiting for traffic. Use the proxy from a device and responses will appear here.</template>
-      </div>
+      <p v-if="!flows.length" class="empty">
+        <template v-if="filtered || kind">Nothing matches this filter. Clear it to see every response.</template>
+        <template v-else>Waiting for traffic. Point a device at the proxy from Connect and its responses will appear here.</template>
+      </p>
 
       <div v-else class="tablewrap">
-        <table>
+        <table class="ledger sticky">
           <thead>
             <tr>
-              <th class="hm">Time</th>
-              <th class="hs">Method</th>
-              <th class="path">URL</th>
-              <th>Status</th>
-              <th class="hs">Kind</th>
-              <th class="hm">Type</th>
-              <th class="r">Size</th>
-              <th class="hm">Codec</th>
-              <th class="hm hl">Profile</th>
-              <th class="r hs">Time</th>
-              <th class="hs">Decision</th>
+              <th class="hm" scope="col">Time</th>
+              <th class="hs" scope="col">Method</th>
+              <th scope="col">URL</th>
+              <th scope="col">Status</th>
+              <th class="hs" scope="col">Kind</th>
+              <th class="hm" scope="col">Type</th>
+              <th class="r hs" scope="col">In</th>
+              <th class="r" scope="col">Out</th>
+              <th class="r" scope="col">Saved</th>
+              <th class="hm" scope="col">Codec</th>
+              <th class="hl" scope="col">Profile</th>
+              <th class="r hs" scope="col">Took</th>
+              <th class="hs" scope="col">Decision</th>
             </tr>
           </thead>
           <tbody>
@@ -266,28 +268,28 @@ function open(f: Flow) {
               v-for="f in flows"
               :key="f.id"
               tabindex="0"
-              :class="{ sel: selected?.id === f.id }"
+              :class="{ sel: selected?.id === f.id, fresh: fresh.has(f.id) }"
+              :aria-label="`${f.method} ${f.host}${path(f)}, status ${f.status}`"
               @click="open(f)"
               @keydown.enter="open(f)"
               @keydown.space.prevent="open(f)"
             >
               <td class="hm mono muted">{{ clock(f.time) }}</td>
               <td class="hs mono">{{ f.method }}</td>
-              <td class="path mono" :title="`${f.scheme}://${f.host}${f.path}`">
-                <span class="host">{{ f.host }}</span><span class="muted">{{ path(f) }}</span>
+              <td class="url mono" :title="`${f.scheme}://${f.host}${f.path}`">
+                <span>{{ f.host }}</span><span class="muted">{{ path(f) }}</span>
               </td>
               <td class="mono" :class="statusClass(f.status)">{{ f.status }}</td>
               <td class="hs">{{ f.kind }}</td>
               <td class="hm mono muted" :title="f.out_content_type ? `${f.content_type} -> ${f.out_content_type}` : f.content_type">{{ mime(f.out_content_type || f.content_type) }}</td>
-              <td class="r mono">
-                <template v-if="f.bytes_in && f.bytes_in !== f.bytes_out">
-                  <span class="muted hs">{{ bytes(f.bytes_in) }} -&gt;</span> {{ bytes(f.bytes_out) }}
-                  <span v-if="savedPct(f) > 0" class="ok">-{{ percent(savedPct(f), 0) }}</span>
-                </template>
-                <template v-else>{{ bytes(f.bytes_out) }}</template>
+              <td class="r hs mono muted">{{ bytes(f.bytes_in) }}</td>
+              <td class="r mono">{{ bytes(f.bytes_out) }}</td>
+              <td class="r saved">
+                <span class="mono" :class="savedPct(f) > 0 ? 'ok' : 'muted'">{{ savedPct(f) > 0 ? percent(savedPct(f), 0) : '' }}</span>
+                <span class="mbar"><i :style="{ width: savedPct(f) + '%' }" /></span>
               </td>
               <td class="hm mono">{{ f.codec || '' }}</td>
-              <td class="hm hl mono muted">{{ f.profile }}</td>
+              <td class="hl mono muted">{{ f.profile }}</td>
               <td class="r hs mono muted">{{ ms(f.duration_ms) }}</td>
               <td class="hs">
                 <span v-if="f.cache_hit" class="tag">cache</span>
@@ -305,153 +307,116 @@ function open(f: Flow) {
 </template>
 
 <style scoped>
-h1 {
-  font-size: 1.1rem;
-  font-weight: 600;
-}
 .traffic {
-  gap: 0.7rem;
+  gap: 1rem;
 }
 .switches {
   display: flex;
-  gap: 0.5rem 2rem;
+  gap: 0.6rem 1.5rem;
   flex-wrap: wrap;
 }
-.switches > div {
-  max-width: 34rem;
-}
-.switches p {
-  margin-top: 0.15rem;
-}
-.panel {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  padding: 1rem;
-}
-.empty {
+.off {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.6rem;
   align-items: flex-start;
-  text-align: left;
-  max-width: 44rem;
-  font-size: 0.9rem;
+  max-width: 62ch;
+  padding-top: 0.5rem;
 }
-.toolbar {
+.filterbar {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.5rem 0.75rem;
   flex-wrap: wrap;
   align-items: flex-start;
 }
 .filterbox {
-  flex: 1 1 18rem;
-}
-.input {
-  min-height: 32px;
-  padding: 0.2rem 0.5rem;
-  border-radius: 2px;
-  font-size: 0.85rem;
+  flex: 1 1 22rem;
 }
 .caret {
   margin: 0.2rem 0 0.1rem;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.chips {
-  display: inline-flex;
-  border: 1px solid var(--border);
-  height: 32px;
-}
-.chips button {
-  appearance: none;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.82rem;
-  padding: 0 0.6rem;
-  cursor: pointer;
-}
-.chips button + button {
-  border-left: 1px solid var(--border);
-}
-.chips button.on {
-  background: var(--surface-2);
-  color: var(--text);
-}
-.chips button:focus-visible,
-tbody tr:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }
 .actions {
   display: flex;
   gap: 0.35rem;
   flex-wrap: wrap;
+  align-items: center;
 }
-.btn {
-  border-radius: 2px;
-  min-height: 32px;
-  font-weight: 400;
+.filterbar .seg {
+  align-self: stretch;
 }
 .count {
-  margin-top: -0.2rem;
+  margin-top: -0.4rem;
 }
 .tablewrap {
-  overflow-x: auto;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  overflow: auto;
+  max-height: calc(100dvh - var(--topbar-h) - var(--statusbar-h) - 15rem);
+  min-height: 14rem;
+  border-bottom: 1px solid var(--rule-strong);
 }
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.82rem;
+.ledger {
+  font-size: var(--fs-xs);
 }
-th {
-  text-align: left;
-  font-weight: 400;
-  color: var(--muted);
-  padding: 0.3rem 0.6rem;
-  border-bottom: 1px solid var(--border);
+.ledger td,
+.ledger th {
+  padding: 0.22rem 0.7rem 0.22rem 0;
   white-space: nowrap;
-  position: sticky;
-  top: 0;
-  background: var(--surface);
 }
-td {
-  padding: 0.22rem 0.6rem;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
+.ledger td.mono {
+  font-size: var(--fs-xs);
+}
+.ledger th:first-child,
+.ledger td:first-child {
+  padding-left: 0.1rem;
 }
 tbody tr {
   cursor: pointer;
 }
-tbody tr:hover td {
-  background: var(--surface-2);
+tbody tr:focus-visible {
+  outline-offset: -2px;
+}
+.ledger td:first-child {
+  border-left: 2px solid transparent;
 }
 tbody tr.sel td {
-  background: var(--accent-soft);
+  background: var(--sunken);
 }
-.r {
-  text-align: right;
+tbody tr.sel td:first-child {
+  border-left-color: var(--ink);
 }
-.path {
+.url {
   width: 100%;
   max-width: 0;
-  min-width: 9rem;
+  min-width: 10rem;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.warnc {
-  color: var(--warn);
+.url span:first-child {
+  color: var(--ink);
 }
 .tag {
-  border: 1px solid var(--border);
-  padding: 0 0.3rem;
   margin-right: 0.35rem;
-  font-size: 0.75rem;
-  color: var(--muted);
+}
+.saved .mono {
+  display: inline-block;
+  min-width: 3.5ch;
+  margin-right: 0.4rem;
+}
+.saved .mbar {
+  width: 40px;
+  height: 3px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  tr.fresh {
+    animation: arrive 0.9s ease-out;
+  }
+  @keyframes arrive {
+    from {
+      background: var(--leaf-tint);
+    }
+  }
 }
 @media (max-width: 1500px) {
   .hl {
@@ -463,9 +428,20 @@ tbody tr.sel td {
     display: none;
   }
 }
-@media (max-width: 700px) {
+@media (max-width: 720px) {
   .hs {
     display: none;
+  }
+  .tablewrap {
+    max-height: none;
+  }
+  .ledger td {
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+    font-size: var(--fs-sm);
+  }
+  .url {
+    min-width: 6rem;
   }
 }
 </style>

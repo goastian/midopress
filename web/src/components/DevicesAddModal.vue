@@ -142,9 +142,8 @@ function close() {
   </UiModal>
 </template>
 
-<style scoped src="./PagesOps.css"></style>
 <style scoped>
 .tok { overflow-wrap: anywhere; padding: 0.3rem 0.5rem; user-select: all; }
 .qr { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; }
-.qr img { background: #fff; border: 1px solid var(--border); padding: 6px; max-width: 100%; height: auto; image-rendering: pixelated; }
+.qr img { background: var(--qr-bg); border: 1px solid var(--rule); padding: 6px; max-width: 100%; height: auto; image-rendering: pixelated; }
 </style>

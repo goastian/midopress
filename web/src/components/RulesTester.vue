@@ -135,21 +135,21 @@ async function run() {
           <dd>{{ result.note }}</dd>
         </template>
       </dl>
-      <div v-if="result.explanations?.length" class="table-wrap">
-        <table class="tbl">
+      <div v-if="result.explanations?.length" class="ledger-wrap">
+        <table class="ledger">
           <thead>
             <tr>
-              <th class="r">#</th>
-              <th>Rule</th>
-              <th>Matched</th>
-              <th>Reason</th>
-              <th>Action</th>
-              <th>Profile</th>
+              <th class="r" scope="col">#</th>
+              <th scope="col">Rule</th>
+              <th scope="col">Matched</th>
+              <th scope="col">Reason</th>
+              <th scope="col">Action</th>
+              <th scope="col">Profile</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="x in result.explanations" :key="x.index" :class="{ hit: x.matched }">
-              <td class="r">{{ x.index + 1 }}</td>
+              <td class="r mono">{{ x.index + 1 }}</td>
               <td class="mono match">{{ x.match }}</td>
               <td :class="x.matched ? 'ok' : 'muted'">{{ x.matched ? 'yes' : 'no' }}</td>
               <td>{{ x.reason }}</td>
@@ -164,7 +164,6 @@ async function run() {
   </section>
 </template>
 
-<style scoped src="./PagesOps.css"></style>
 <style scoped>
 .form { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.7rem 0.9rem; align-items: start; }
 .form .wide { grid-column: 1 / -1; }
@@ -173,5 +172,5 @@ p.res { display: block; }
 .kv { margin-right: 0.8rem; }
 .match { overflow-wrap: anywhere; min-width: 12rem; }
 .form textarea { min-height: 0; }
-.hit td { background: var(--accent-soft); }
+.hit td { background: var(--leaf-tint); }
 </style>

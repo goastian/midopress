@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { toast, toastError } from '../composables/toast'
+import { toastError } from '../composables/toast'
 
 const props = defineProps<{ value: string; label?: string }>()
 const emit = defineEmits<{ copied: [] }>()
@@ -23,7 +23,6 @@ async function copy() {
     }
     done.value = true
     emit('copied')
-    toast('Copied', 'ok', 1500)
     setTimeout(() => (done.value = false), 1500)
   } catch (e) {
     toastError(e)
@@ -32,7 +31,5 @@ async function copy() {
 </script>
 
 <template>
-  <button type="button" class="btn small" @click="copy">{{ done ? 'Copied' : (label ?? 'Copy') }}</button>
+  <button type="button" class="btn small" aria-live="polite" @click="copy">{{ done ? 'Copied' : (label ?? 'Copy') }}</button>
 </template>
-
-<style scoped src="./PagesOps.css"></style>

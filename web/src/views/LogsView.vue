@@ -166,7 +166,7 @@ onBeforeUnmount(() => clearInterval(timer))
     <div class="page-head">
       <div>
         <h1>Logs</h1>
-        <p class="small">The service log, live. URLs are never logged unless <code>log.urls</code> is set.</p>
+        <p>The service log, live. URLs are never logged unless <code>log.urls</code> is set.</p>
       </div>
       <div class="level">
         <label for="lv" class="small muted">Service log level</label>
@@ -182,7 +182,7 @@ onBeforeUnmount(() => clearInterval(timer))
       The level applies at once and affects what MidoPress keeps and prints, not only this view. Debug is verbose; set it back to info when done.
     </p>
 
-    <div class="bar">
+    <div class="filters">
       <input v-model="query" class="input" type="search" placeholder="Filter text" aria-label="Filter text" />
       <select v-model="minLevel" class="select lvl" aria-label="Show from level">
         <option value="DEBUG">show: all</option>
@@ -193,8 +193,8 @@ onBeforeUnmount(() => clearInterval(timer))
       <div class="row tight">
         <button v-if="!paused" class="btn small" @click="paused = true">Pause</button>
         <button v-else class="btn small primary" @click="resume">Resume{{ held.length ? ` (${held.length})` : '' }}</button>
-        <button class="btn small" :class="{ on: wrap }" :aria-pressed="wrap" @click="wrap = !wrap">Wrap</button>
-        <button class="btn small" :class="{ on: relative }" :aria-pressed="relative" @click="relative = !relative">
+        <button class="btn small" :aria-pressed="wrap" @click="wrap = !wrap">Wrap</button>
+        <button class="btn small" :aria-pressed="relative" @click="relative = !relative">
           {{ relative ? 'Relative' : 'Absolute' }}
         </button>
         <button class="btn small" :disabled="!shown.length" @click="save">Download</button>
@@ -202,15 +202,15 @@ onBeforeUnmount(() => clearInterval(timer))
       </div>
     </div>
 
-    <div class="status small muted num">
+    <div class="count xs muted mono">
       {{ shown.length }} of {{ rows.length }} lines<span v-if="paused"> - paused, {{ held.length }} waiting</span>
     </div>
 
     <div class="viewport">
       <div ref="box" class="lines" :class="{ wrap }" tabindex="0" @scroll.passive="onScroll">
-        <div v-if="loadError" class="empty">{{ loadError }}</div>
-        <div v-else-if="loaded && !shown.length" class="empty">
-          {{ rows.length ? 'No line matches the filter.' : 'No lines yet.' }}
+        <div v-if="loadError" class="empty pad bad">{{ loadError }}</div>
+        <div v-else-if="loaded && !shown.length" class="empty pad">
+          {{ rows.length ? 'No line matches the filter. Clear the filter text or lower the level.' : 'No lines yet. New lines appear here as MidoPress logs them.' }}
         </div>
         <div v-for="r in shown" :key="r.id" class="ln">
           <span class="t num">{{ stamp(r.time) }}</span>
@@ -225,13 +225,13 @@ onBeforeUnmount(() => clearInterval(timer))
 
 <style scoped>
 .logs {
-  gap: 0.6rem;
-  height: calc(100dvh - 3rem);
-  min-height: 420px;
+  gap: 0.75rem;
+  height: calc(100dvh - var(--topbar-h));
+  min-height: 460px;
 }
-@media (max-width: 860px) {
+@media (max-width: 720px) {
   .logs {
-    height: calc(100dvh - var(--topbar-h) - var(--bottom-nav-h) - 3.5rem);
+    height: calc(100dvh - var(--topbar-h) - 41px);
   }
 }
 .level {
@@ -242,22 +242,21 @@ onBeforeUnmount(() => clearInterval(timer))
 .level .select {
   width: auto;
 }
-.bar {
+.filters {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
   align-items: center;
 }
-.bar .input {
+.filters .input {
   flex: 1 1 200px;
   width: auto;
 }
-.bar .select.lvl {
+.filters .select.lvl {
   width: auto;
 }
-.btn.on {
-  border-color: var(--accent);
-  color: var(--accent-strong);
+.count {
+  margin-top: -0.35rem;
 }
 .viewport {
   position: relative;
@@ -269,23 +268,22 @@ onBeforeUnmount(() => clearInterval(timer))
   flex: 1;
   overflow: auto;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  line-height: 1.5;
+  border: 1px solid var(--rule-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
   padding: 0.25rem 0;
 }
 .ln {
   display: flex;
-  gap: 0.75rem;
-  padding: 0 0.7rem;
+  gap: 0.9rem;
+  padding: 0 0.8rem;
   white-space: pre;
   width: max-content;
   min-width: 100%;
 }
 .ln:hover {
-  background: var(--surface-2);
+  background: var(--hover);
 }
 .lines.wrap .ln {
   white-space: pre-wrap;
@@ -293,41 +291,42 @@ onBeforeUnmount(() => clearInterval(timer))
   word-break: break-word;
 }
 .t {
-  color: var(--muted);
+  color: var(--ink-2);
   flex: none;
 }
 .lv {
   flex: none;
-  color: var(--muted);
+  color: var(--ink-2);
   white-space: pre;
 }
 .lv.info {
-  color: var(--text);
+  color: var(--ink);
 }
 .lv.warn {
-  color: var(--warn);
+  color: var(--amber);
 }
 .lv.error {
-  color: var(--danger);
-  font-weight: 600;
+  color: var(--vermilion);
+  font-weight: 500;
 }
 .msg {
   min-width: 0;
 }
 .m {
-  color: var(--text);
+  color: var(--ink);
 }
 .k {
-  color: var(--muted);
+  color: var(--ink-2);
 }
 .jump {
   position: absolute;
   right: 1rem;
   bottom: 0.8rem;
-  background: var(--surface);
-  border-color: var(--accent);
+  background: var(--paper);
 }
-.empty {
-  font-family: var(--font);
+.pad {
+  padding: 0.5rem 0.8rem;
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
 }
 </style>

@@ -2,14 +2,16 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import { getToken } from '../api/client'
 
 export const routes = [
-  { path: '/', name: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { title: 'Dashboard', icon: 'dashboard' } },
-  { path: '/traffic', name: 'traffic', component: () => import('../views/TrafficView.vue'), meta: { title: 'Traffic', icon: 'traffic' } },
-  { path: '/devices', name: 'devices', component: () => import('../views/DevicesView.vue'), meta: { title: 'Devices', icon: 'devices' } },
-  { path: '/rules', name: 'rules', component: () => import('../views/RulesView.vue'), meta: { title: 'Rules & profiles', icon: 'rules' } },
-  { path: '/certificate', name: 'certificate', component: () => import('../views/CertificateView.vue'), meta: { title: 'Certificate', icon: 'shield' } },
-  { path: '/logs', name: 'logs', component: () => import('../views/LogsView.vue'), meta: { title: 'Logs', icon: 'logs' } },
-  { path: '/service', name: 'service', component: () => import('../views/ServiceView.vue'), meta: { title: 'Service', icon: 'service' } },
-  { path: '/login', name: 'login', component: () => import('../views/LoginView.vue'), meta: { public: true } },
+  { path: '/', name: 'overview', component: () => import('../views/DashboardView.vue'), meta: { title: 'Overview', nav: true } },
+  { path: '/traffic', name: 'traffic', component: () => import('../views/TrafficView.vue'), meta: { title: 'Traffic', nav: true } },
+  { path: '/devices', name: 'devices', component: () => import('../views/DevicesView.vue'), meta: { title: 'Devices', nav: true } },
+  { path: '/rules', name: 'policy', component: () => import('../views/RulesView.vue'), meta: { title: 'Policy', nav: true } },
+  { path: '/connect', name: 'connect', component: () => import('../views/ConnectView.vue'), meta: { title: 'Connect', nav: true } },
+  { path: '/logs', name: 'logs', component: () => import('../views/LogsView.vue'), meta: { title: 'Logs', nav: true } },
+  { path: '/service', name: 'service', component: () => import('../views/ServiceView.vue'), meta: { title: 'Service', nav: true } },
+  { path: '/certificate', redirect: '/connect' },
+  { path: '/policy', redirect: '/rules' },
+  { path: '/login', name: 'login', component: () => import('../views/LoginView.vue'), meta: { public: true, title: 'Sign in' } },
 ]
 
 // Hash history: the admin server only has to serve index.html, and the token

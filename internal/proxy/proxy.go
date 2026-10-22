@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -38,7 +40,11 @@ type Options struct {
 
 	// Magic answers the requests for MagicHost itself, which never leave the
 	// proxy: the page that explains how to install the certificate.
-	Magic     http.Handler
+	Magic http.Handler
+
+	// Discovery answers /.well-known/midopress.json, which tells a client what to
+	// configure from the one address it was given. It needs no credentials.
+	Discovery http.Handler
 	MagicHost func(host string) bool
 
 	// Metrics serves /metrics on the proxy port, to the clients the proxy
@@ -181,6 +187,8 @@ type Stats struct {
 	Denied           uint64
 	Tunnels          uint64
 	TunnelsActive    int64
+	TunnelBytesUp    uint64
+	TunnelBytesDown  uint64
 	TLSHandshakes    uint64
 	TLSHandshakeErrs uint64
 	AutoPassthrough  uint64
@@ -199,6 +207,8 @@ func (p *Proxy) Stats() Stats {
 		Denied:           p.denied.Load(),
 		Tunnels:          p.tunnels.total.Load(),
 		TunnelsActive:    p.tunnels.active.Load(),
+		TunnelBytesUp:    p.tunnels.up.Load(),
+		TunnelBytesDown:  p.tunnels.down.Load(),
 		TLSHandshakes:    p.handshakes.Load(),
 		TLSHandshakeErrs: p.handshakeErr.Load(),
 		AutoPassthrough:  p.autoMarked.Load(),
@@ -218,6 +228,16 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	if directVisit && r.Method == http.MethodGet && r.URL.Path == "/health" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
+		return
+	}
+
+	if directVisit && r.Method == http.MethodGet && r.URL.Path == "/.well-known/midopress.json" && p.opts.Discovery != nil {
+		p.opts.Discovery.ServeHTTP(w, r)
+		return
+	}
+
+	if directVisit && r.Method == http.MethodGet && (r.URL.Path == "/proxy.pac" || r.URL.Path == "/proxy-full.pac") {
+		p.servePAC(w, r)
 		return
 	}
 
@@ -396,4 +416,45 @@ func (p *Proxy) handleLocal(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+var pacHost = regexp.MustCompile(`^[A-Za-z0-9.\-]+(:[0-9]{1,5})?$|^\[[0-9A-Fa-f:.]+\](:[0-9]{1,5})?$`)
+
+// servePAC answers with a proxy auto-configuration file, so that a device is set
+// up by pasting one address. It names the proxy by the host the client used to
+// reach it. /proxy.pac sends only plain HTTP through the proxy, which is all it
+// can shrink without a certificate; /proxy-full.pac sends HTTPS too, which only
+// works on devices that trust the CA, so it exists only when there is one.
+func (p *Proxy) servePAC(w http.ResponseWriter, r *http.Request) {
+	full := r.URL.Path == "/proxy-full.pac"
+	if full && len(p.opts.CACertPEM) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if !pacHost.MatchString(r.Host) {
+		http.Error(w, "bad host", http.StatusBadRequest)
+		return
+	}
+	host := r.Host
+	if !strings.Contains(strings.TrimPrefix(host, "["), ":") || strings.HasSuffix(host, "]") {
+		host += ":80"
+	}
+	scheme := `url.substring(0, 5) == "http:"`
+	if full {
+		scheme = `url.substring(0, 5) == "http:" || url.substring(0, 6) == "https:"`
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/x-ns-proxy-autoconfig")
+	h.Set("Cache-Control", "no-cache")
+	_, _ = fmt.Fprintf(w, `function FindProxyForURL(url, host) {
+  if (isPlainHostName(host) || /\.local$/.test(host) || host == "localhost" ||
+      /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(host)) {
+    return "DIRECT";
+  }
+  if (%s) {
+    return "PROXY %s; DIRECT";
+  }
+  return "DIRECT";
+}
+`, scheme, host)
 }

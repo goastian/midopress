@@ -147,23 +147,23 @@ async function copyConfig() {
 </script>
 
 <template>
-  <div class="page svc">
+  <div class="page">
     <div class="page-head">
       <div>
         <h1>Service</h1>
-        <p class="small">State of this MidoPress, and what you can do to it.</p>
+        <p>State of this MidoPress, and what you can do to it.</p>
       </div>
     </div>
 
-    <section class="card">
-      <header><h2>Status</h2></header>
+    <section class="sec">
+      <div class="sec-head"><h2>Status</h2></div>
       <div v-if="aboutError" class="notice err">{{ aboutError }}</div>
-      <dl v-else-if="about" class="kv">
-        <dt>Version</dt><dd class="num">{{ about.version }}</dd>
-        <dt>Go</dt><dd class="num">{{ about.go_version }}</dd>
+      <dl v-else-if="about" class="dl">
+        <dt>Version</dt><dd class="mono">{{ about.version }}</dd>
+        <dt>Go</dt><dd class="mono">{{ about.go_version }}</dd>
         <dt>Platform</dt><dd>{{ about.os }}/{{ about.arch }}</dd>
-        <dt>Uptime</dt><dd class="num">{{ uptime }}</dd>
-        <dt>Started</dt><dd class="num">{{ dateTime(about.started) }}</dd>
+        <dt>Uptime</dt><dd class="mono">{{ uptime }}</dd>
+        <dt>Started</dt><dd class="mono">{{ dateTime(about.started) }}</dd>
         <dt>Proxy address</dt><dd class="mono">{{ about.proxy_addr }}</dd>
         <dt>TLS</dt><dd>{{ about.tls ? 'on' : 'off' }}</dd>
         <dt>MITM</dt><dd>{{ about.mitm ? 'on, HTTPS is decrypted' : 'off, HTTPS passes through' }}</dd>
@@ -175,11 +175,11 @@ async function copyConfig() {
           <span v-for="[name, ok] in native" :key="name" class="codec" :class="{ yes: ok }">{{ name }} {{ ok ? 'yes' : 'no' }}</span>
         </dd>
       </dl>
-      <div v-else class="muted">Loading</div>
+      <div v-else class="skeleton" role="status" aria-label="Loading"><i /><i /><i /></div>
     </section>
 
-    <section class="card">
-      <header><h2>Actions</h2></header>
+    <section class="sec">
+      <div class="sec-head"><h2>Actions</h2></div>
       <ul class="acts">
         <li v-for="(a, k) in actions" :key="k">
           <div class="grow">
@@ -191,10 +191,10 @@ async function copyConfig() {
       </ul>
     </section>
 
-    <div class="grid cols-2">
-      <section class="card">
-        <header><h2>Privacy and runtime</h2></header>
-        <p class="hint" style="margin-bottom: 0.5rem">Applied at once, kept only until MidoPress stops.</p>
+    <div class="cols">
+      <section class="sec">
+        <div class="sec-head"><h2>Privacy and runtime</h2></div>
+        <p class="hint" style="margin-bottom: 0.4rem">Applied at once, kept only until MidoPress stops.</p>
         <ul class="acts">
           <li v-for="s in switches" :key="s.key">
             <div class="grow">
@@ -211,50 +211,50 @@ async function copyConfig() {
         </ul>
       </section>
 
-      <section class="card">
-        <header><h2>Cache</h2></header>
-        <dl v-if="stats" class="kv">
-          <dt>Memory</dt><dd class="num">{{ bytes(stats.cache.memory_bytes) }} in {{ count(stats.cache.memory_items) }} items</dd>
-          <dt>Disk</dt><dd class="num">{{ bytes(stats.cache.disk_bytes) }} in {{ count(stats.cache.disk_items) }} items</dd>
-          <dt>Hit rate</dt><dd class="num">{{ hit }}<span class="muted"> ({{ count(stats.cache.hits) }} hits, {{ count(stats.cache.misses) }} misses)</span></dd>
-          <dt>Evictions</dt><dd class="num">{{ count(stats.cache.evictions) }}</dd>
-          <dt>Expired</dt><dd class="num">{{ count(stats.cache.expired) }}</dd>
-          <dt>Disk errors</dt><dd class="num" :class="{ bad: stats.cache.disk_errors > 0 }">{{ count(stats.cache.disk_errors) }}</dd>
+      <section class="sec">
+        <div class="sec-head"><h2>Cache</h2></div>
+        <dl v-if="stats" class="dl">
+          <dt>Memory</dt><dd class="mono">{{ bytes(stats.cache.memory_bytes) }} in {{ count(stats.cache.memory_items) }} items</dd>
+          <dt>Disk</dt><dd class="mono">{{ bytes(stats.cache.disk_bytes) }} in {{ count(stats.cache.disk_items) }} items</dd>
+          <dt>Hit rate</dt><dd class="mono">{{ hit }}<span class="muted"> ({{ count(stats.cache.hits) }} hits, {{ count(stats.cache.misses) }} misses)</span></dd>
+          <dt>Evictions</dt><dd class="mono">{{ count(stats.cache.evictions) }}</dd>
+          <dt>Expired</dt><dd class="mono">{{ count(stats.cache.expired) }}</dd>
+          <dt>Disk errors</dt><dd class="mono" :class="{ bad: stats.cache.disk_errors > 0 }">{{ count(stats.cache.disk_errors) }}</dd>
         </dl>
-        <div v-else class="muted">Waiting for statistics</div>
+        <div v-else class="skeleton" role="status" aria-label="Loading"><i /><i /><i /></div>
       </section>
     </div>
 
-    <section class="card">
-      <header>
+    <section class="sec">
+      <div class="sec-head">
         <h2>Effective configuration</h2>
         <div class="row tight">
           <span class="hint">Read only, secrets are redacted</span>
           <button class="btn small" :disabled="!cfg" @click="copyConfig">Copy as YAML</button>
         </div>
-      </header>
+      </div>
       <div v-if="cfgError" class="notice err">{{ cfgError }}</div>
       <div v-else-if="cfg" class="tree mono">
         <ServiceConfigNode v-for="(v, k) in cfg.config" :key="k" :name="String(k)" :value="v" />
       </div>
-      <div v-else class="muted">Loading</div>
+      <div v-else class="skeleton" role="status" aria-label="Loading"><i /><i /><i /></div>
     </section>
 
-    <section class="card">
-      <header>
+    <section class="sec">
+      <div class="sec-head">
         <h2>Metrics</h2>
         <button class="btn small" @click="metrics">Download metrics</button>
-      </header>
+      </div>
       <p class="hint">Prometheus text format from /api/v1/metrics. It needs the admin token, so it is fetched here instead of linked.</p>
     </section>
 
-    <section class="card">
-      <header>
+    <section class="sec">
+      <div class="sec-head">
         <h2>About and licenses</h2>
         <button class="btn small" :aria-expanded="showModules" @click="showModules = !showModules">
           {{ showModules ? 'Hide' : 'Show' }} third-party modules{{ about ? ` (${about.modules.length})` : '' }}
         </button>
-      </header>
+      </div>
       <p class="small">
         MidoPress, the image and text saving proxy of Midori. The admin API is described in <code>docs/09-admin-api.md</code>.
       </p>
@@ -293,41 +293,12 @@ async function copyConfig() {
 </template>
 
 <style scoped>
-.svc {
-  max-width: 1100px;
-}
-.card > header {
-  margin-bottom: 0.6rem;
-}
-.kv {
-  display: grid;
-  grid-template-columns: 9rem minmax(0, 1fr);
-  gap: 0.25rem 1rem;
-  margin: 0;
-  font-size: 0.9rem;
-}
-.kv dt {
-  color: var(--muted);
-}
-.kv dd {
-  margin: 0;
-  word-break: break-all;
-}
-@media (max-width: 480px) {
-  .kv {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
-  }
-  .kv dd {
-    margin-bottom: 0.45rem;
-  }
-}
 .codec {
   margin-right: 0.9rem;
-  color: var(--muted);
+  color: var(--ink-2);
 }
 .codec.yes {
-  color: var(--accent-strong);
+  color: var(--leaf);
 }
 .acts {
   list-style: none;
@@ -339,14 +310,11 @@ async function copyConfig() {
   align-items: center;
   gap: 1rem;
   padding: 0.6rem 0;
-  border-top: 1px solid var(--border);
-}
-.acts li:first-child {
-  border-top: 0;
+  border-bottom: 1px solid var(--rule);
 }
 .name {
-  font-weight: 600;
-  font-size: 0.92rem;
+  font-size: var(--fs-sm);
+  font-weight: 500;
 }
 @media (max-width: 560px) {
   .acts li {
@@ -354,7 +322,7 @@ async function copyConfig() {
   }
 }
 .tree {
-  font-size: 0.82rem;
+  font-size: var(--fs-xs);
   line-height: 1.55;
   max-height: 480px;
   overflow: auto;
@@ -371,25 +339,21 @@ async function copyConfig() {
   padding: 0;
   max-height: 320px;
   overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 0.8rem;
+  border-top: 1px solid var(--rule);
+  font-size: var(--fs-xs);
 }
 .modlist li {
   display: flex;
   gap: 1rem;
-  padding: 0.25rem 0.6rem;
-  border-top: 1px solid var(--border);
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--rule);
   word-break: break-all;
-}
-.modlist li:first-child {
-  border-top: 0;
 }
 .stopped {
   position: fixed;
   inset: 0;
   z-index: 100;
-  background: var(--bg);
+  background: var(--paper);
   display: flex;
   align-items: center;
   justify-content: center;

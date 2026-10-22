@@ -6,7 +6,7 @@ const auth = { Authorization: `Bearer ${TOKEN}` }
 
 async function signIn(page: Page) {
   await page.goto(`/#/login?token=${TOKEN}`)
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible()
 }
 
 // a page of text that the proxy compresses, through the proxy itself
@@ -82,9 +82,13 @@ test('a rule with a syntax error is marked and cannot be saved', async ({ page }
   await expect(page.getByRole('button', { name: /^save/i }).first()).toBeDisabled()
 })
 
-test('the certificate page offers the CA and the magic host serves it', async ({ page, request }) => {
+test('the connect page shows the PAC address, offers the CA and the magic host serves it', async ({ page, request }) => {
   await signIn(page)
   await page.goto('/#/certificate')
+  await expect(page).toHaveURL(/#\/connect$/)
+  await expect(page.getByRole('heading', { name: 'Connect', exact: true })).toBeVisible()
+  await expect(page.locator('#pac-url')).toHaveValue(/^http:\/\/[^/]+:29999\/proxy\.pac$/)
+  await expect(page.locator('#full-url')).toHaveValue(/:29999\/proxy-full\.pac$/)
   const ca = await (await request.get(`${ADMIN}/api/v1/ca`, { headers: auth })).json()
   expect(ca.available).toBe(true)
   const groups = ca.sha256.match(/../g).join(' ')
@@ -118,7 +122,7 @@ test('every page opens without errors', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
   await signIn(page)
-  for (const p of ['/', '/traffic', '/devices', '/rules', '/certificate', '/logs', '/service']) {
+  for (const p of ['/', '/traffic', '/devices', '/rules', '/connect', '/logs', '/service']) {
     await page.goto(`/#${p}`)
     await expect(page.locator('main h1').first()).toBeVisible()
   }

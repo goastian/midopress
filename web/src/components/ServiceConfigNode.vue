@@ -40,7 +40,7 @@ function scalar(v: unknown): string {
   content: '+';
   display: inline-block;
   width: 1rem;
-  color: var(--muted);
+  color: var(--ink-2);
 }
 .node[open] > summary::before {
   content: '-';
@@ -51,20 +51,19 @@ function scalar(v: unknown): string {
 .kids {
   margin-left: 0.5rem;
   padding-left: 0.6rem;
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--rule);
 }
 .leaf {
   padding: 0.05rem 0 0.05rem 1rem;
   word-break: break-all;
 }
 .k {
-  color: var(--text);
+  color: var(--ink);
 }
 .v {
-  color: var(--accent-strong);
+  color: var(--ink);
 }
 .v.red {
-  color: var(--muted);
-  font-style: italic;
+  color: var(--ink-2);
 }
 </style>

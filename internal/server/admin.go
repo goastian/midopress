@@ -1,10 +1,16 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/goastian/midopress/internal/admin"
 	"github.com/goastian/midopress/internal/auth"
@@ -208,4 +214,52 @@ func (s *Server) saveOverrides(o *config.Overrides) error {
 		return err
 	}
 	return nil
+}
+
+// discovery is the document a client reads from the one address it was given,
+// the way a DNS service hands out an endpoint: it says where the proxy is, how
+// to authenticate, what the certificate is, and which files configure a browser.
+func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
+	cfg := s.current.Load()
+	host, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		host, port = r.Host, ""
+	}
+	if port == "" {
+		_, port, _ = net.SplitHostPort(cfg.Listen.Addr)
+	}
+	tls := cfg.Listen.TLS.Cert != ""
+	scheme := "http"
+	if tls {
+		scheme = "https"
+	}
+	base := scheme + "://" + net.JoinHostPort(host, port)
+	profiles, def := s.pipe.Profiles()
+	names := make([]string, 0, len(profiles))
+	for n := range profiles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	doc := map[string]any{
+		"service": "midopress", "version": s.version,
+		"proxy":    map[string]any{"host": host, "port": port, "tls": tls, "auth": cfg.Auth.Mode},
+		"pac":      map[string]any{"http": base + "/proxy.pac", "full": nil},
+		"https":    map[string]any{"intercept": false},
+		"profiles": names, "default_profile": def,
+	}
+	if s.ca != nil {
+		sum := sha256.Sum256(s.ca.Cert.Raw)
+		doc["pac"].(map[string]any)["full"] = base + "/proxy-full.pac"
+		doc["https"] = map[string]any{
+			"intercept": true,
+			"ca": map[string]any{
+				"url": base + "/cacert", "sha256": strings.ToUpper(hex.EncodeToString(sum[:])),
+				"not_after": s.ca.Cert.NotAfter.UTC().Format(time.RFC3339),
+			},
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	_ = json.NewEncoder(w).Encode(doc)
 }

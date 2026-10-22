@@ -6,6 +6,7 @@ import { on } from '../composables/live'
 import { usePoll } from '../composables/poll'
 import { toast, toastError } from '../composables/toast'
 import { ago, bytes, count, dateTime, percent } from '../composables/format'
+import UiIcon from '../components/UiIcon.vue'
 import UiModal from '../components/UiModal.vue'
 import DevicesAddModal from '../components/DevicesAddModal.vue'
 import PagesCopyButton from '../components/PagesCopyButton.vue'
@@ -133,16 +134,17 @@ const setupYaml = `auth:
         <span class="sub">{{ sortedClients.filter((c) => c.active).length }} active, {{ sortedClients.length }} seen recently</span>
       </div>
       <p v-if="clientsError" class="notice err">{{ clientsError }}</p>
-      <p v-else-if="clientsLoaded && !sortedClients.length" class="muted small">Nobody has used the proxy recently.</p>
-      <div v-else-if="sortedClients.length" class="table-wrap">
-        <table class="tbl">
+      <div v-else-if="!clientsLoaded" class="skeleton" role="status" aria-label="Loading"><i /><i /><i /></div>
+      <p v-else-if="!sortedClients.length" class="empty">Nobody has used the proxy recently. Paste the address from Connect into a device to see it here.</p>
+      <div v-else-if="sortedClients.length" class="ledger-wrap">
+        <table class="ledger">
           <thead>
             <tr>
-              <th></th>
+              <th><span class="sr-only">Details</span></th>
               <th>Device or client</th>
               <th class="hide-sm">Address</th>
               <th class="hide-sm">User agent</th>
-              <th>Profile</th>
+              <th class="hide-sm">Profile</th>
               <th class="r">Requests</th>
               <th class="r hide-sm">In flight</th>
               <th class="r hide-sm">In</th>
@@ -156,28 +158,28 @@ const setupYaml = `auth:
               <tr>
                 <td>
                   <button class="exp" :aria-expanded="open.has(c.key)" :aria-label="`Details of ${c.key}`" @click="toggle(c.key)">
-                    <i :class="{ down: open.has(c.key) }" />
+                    <UiIcon name="chevron" :size="12" />
                   </button>
                 </td>
                 <td class="nowrap">
-                  <span class="dot" :class="{ on: c.active }" :title="c.active ? 'active' : 'idle'" />
+                  <span class="dot" :class="{ on: c.active }" role="img" :aria-label="c.active ? 'active' : 'idle'" />
                   <span class="mono key">{{ c.key }}</span>
                 </td>
                 <td class="mono nowrap hide-sm">{{ c.addr }}</td>
                 <td class="ua hide-sm" :title="c.user_agent">{{ shortUA(c.user_agent) }}</td>
-                <td class="mono">{{ c.profile || '-' }}</td>
-                <td class="r">{{ count(c.requests) }}</td>
-                <td class="r hide-sm">{{ c.in_flight }}</td>
-                <td class="r nowrap hide-sm">{{ bytes(c.bytes_in) }}</td>
-                <td class="r nowrap hide-sm">{{ bytes(c.bytes_out) }}</td>
-                <td class="r nowrap">{{ bytes(c.saved) }} <span class="muted">{{ percent(savedPct(c), 0) }}</span></td>
+                <td class="mono hide-sm">{{ c.profile || '-' }}</td>
+                <td class="r mono">{{ count(c.requests) }}</td>
+                <td class="r hide-sm mono">{{ c.in_flight }}</td>
+                <td class="r nowrap hide-sm mono">{{ bytes(c.bytes_in) }}</td>
+                <td class="r nowrap hide-sm mono">{{ bytes(c.bytes_out) }}</td>
+                <td class="r nowrap mono"><span class="ok">{{ bytes(c.saved) }}</span> <span class="muted">{{ percent(savedPct(c), 0) }}</span></td>
                 <td class="nowrap" :title="dateTime(c.last_seen)">{{ ago(c.last_seen, now) }}</td>
               </tr>
               <tr v-if="open.has(c.key)" class="sub">
                 <td></td>
                 <td colspan="10">
                   <p v-if="!kinds(c).length" class="muted small">No traffic by kind yet.</p>
-                  <table v-else class="tbl inner">
+                  <table v-else class="ledger inner">
                     <thead>
                       <tr>
                         <th>Kind</th>
@@ -199,7 +201,7 @@ const setupYaml = `auth:
                       </tr>
                     </tbody>
                   </table>
-                  <p class="muted small first">First seen {{ dateTime(c.first_seen) }}</p>
+                  <p class="muted xs first">First seen {{ dateTime(c.first_seen) }}</p>
                 </td>
               </tr>
             </template>
@@ -223,9 +225,9 @@ const setupYaml = `auth:
         </div>
       </div>
       <p v-else-if="devicesError" class="notice err">{{ devicesError }}</p>
-      <p v-else-if="devices && !devices.length" class="muted small">No devices yet. Add one to get a token for the Midori extension.</p>
-      <div v-else-if="devices" class="table-wrap">
-        <table class="tbl">
+      <p v-else-if="devices && !devices.length" class="empty">No devices yet. Choose Add device to get a token for the Midori extension.</p>
+      <div v-else-if="devices" class="ledger-wrap">
+        <table class="ledger">
           <thead>
             <tr>
               <th>Id</th>
@@ -234,12 +236,12 @@ const setupYaml = `auth:
               <th>Last seen</th>
               <th class="r hide-sm">Requests</th>
               <th class="r">Saved</th>
-              <th></th>
+              <th><span class="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="d in devices" :key="d.id">
-              <td class="nowrap"><span class="dot" :class="{ on: d.active }" /><span class="mono key">{{ d.id }}</span></td>
+              <td class="nowrap"><span class="dot" :class="{ on: d.active }" role="img" :aria-label="d.active ? 'active' : 'idle'" /><span class="mono key">{{ d.id }}</span></td>
               <td>
                 <select class="select compact" :value="d.profile" :aria-label="`Profile of ${d.id}`" @change="setProfile(d, $event)">
                   <option value="">default ({{ defaultProfile }})</option>
@@ -249,9 +251,9 @@ const setupYaml = `auth:
               </td>
               <td class="nowrap hide-sm">{{ dateTime(d.created) }}</td>
               <td class="nowrap">{{ ago(d.last_seen, now) }}</td>
-              <td class="r hide-sm">{{ count(d.requests) }}</td>
-              <td class="r nowrap">{{ bytes(d.saved) }}</td>
-              <td class="r"><button class="btn small danger" @click="revoking = d">Revoke</button></td>
+              <td class="r hide-sm mono">{{ count(d.requests) }}</td>
+              <td class="r nowrap mono ok">{{ bytes(d.saved) }}</td>
+              <td class="r"><button class="btn small danger" :aria-label="`Revoke ${d.id}`" @click="revoking = d">Revoke</button></td>
             </tr>
           </tbody>
         </table>
@@ -270,15 +272,14 @@ const setupYaml = `auth:
   </div>
 </template>
 
-<style scoped src="../components/PagesOps.css"></style>
 <style scoped>
 .key { margin-left: 0.4rem; }
 .ua { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.exp { appearance: none; background: none; border: 0; padding: 0.3rem; cursor: pointer; display: flex; }
-.exp i { width: 0; height: 0; border-left: 5px solid var(--muted); border-top: 4px solid transparent; border-bottom: 4px solid transparent; }
-.exp i.down { border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid var(--muted); border-bottom: 0; }
+.exp { appearance: none; background: none; border: 0; padding: 0.3rem; cursor: pointer; display: flex; color: var(--ink-2); }
+.exp:hover { color: var(--ink); }
+.exp svg { transition: transform 0.12s; }
+.exp[aria-expanded='true'] svg { transform: rotate(90deg); }
 .inner { max-width: 640px; }
-.inner th, .inner td { padding: 0.2rem 0.5rem; }
-.first { margin-top: 0.4rem; }
+.first { margin-top: 0.5rem; }
 .setup { display: flex; flex-direction: column; gap: 0.6rem; }
 </style>

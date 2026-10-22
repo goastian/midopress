@@ -3,7 +3,7 @@ import { computed, reactive, ref } from 'vue'
 import { api, ApiFailure } from '../api/client'
 import type { ConfigView, ProfileInfo, ProfileOverride } from '../api/types'
 import { toast } from '../composables/toast'
-import UiModal from './UiModal.vue'
+import UiDrawer from './UiDrawer.vue'
 
 const props = defineProps<{ profile: ProfileInfo | null; profiles: ProfileInfo[] }>()
 const emit = defineEmits<{ close: []; saved: [cfg: ConfigView] }>()
@@ -143,7 +143,11 @@ async function remove() {
 </script>
 
 <template>
-  <UiModal :title="isNew ? 'New profile' : `Profile ${name}`" wide @close="emit('close')">
+  <UiDrawer :label="isNew ? 'New profile' : `Profile ${name}`" wide @close="emit('close')">
+    <template #head>
+      <h2>{{ isNew ? 'New profile' : name }}</h2>
+      <p v-if="!isNew" class="muted small">{{ builtin ? 'Built-in profile' : 'Custom profile' }}</p>
+    </template>
     <div class="stack-sm">
       <p v-if="builtin" class="muted small">
         Built-in profile. Fields you fill in override the built-in value; empty fields keep it.
@@ -166,13 +170,13 @@ async function remove() {
         </div>
       </div>
 
-      <div class="table-wrap">
-        <table class="tbl form">
+      <div class="ledger-wrap">
+        <table class="ledger form">
           <thead>
             <tr>
-              <th>Setting</th>
-              <th>Value</th>
-              <th>{{ isNew ? 'Base value' : 'Current' }}</th>
+              <th scope="col">Setting</th>
+              <th scope="col">Value</th>
+              <th scope="col">{{ isNew ? 'Base value' : 'Current' }}</th>
             </tr>
           </thead>
           <tbody>
@@ -255,15 +259,15 @@ async function remove() {
         <button class="btn primary" :disabled="!canSave" @click="save">{{ busy ? 'Saving' : 'Save and apply' }}</button>
       </template>
     </template>
-  </UiModal>
+  </UiDrawer>
 </template>
 
-<style scoped src="./PagesOps.css"></style>
 <style scoped>
 .head2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.8rem; }
-.form td { vertical-align: top; padding-top: 0.45rem; padding-bottom: 0.45rem; }
-.form td:first-child { padding-top: 0.7rem; white-space: nowrap; }
-.form td:last-child { padding-top: 0.7rem; }
+.form td { vertical-align: top; padding-top: 0.5rem; padding-bottom: 0.5rem; }
+.form td:first-child { padding-top: 0.75rem; white-space: nowrap; }
+.form td:last-child { padding-top: 0.75rem; }
+.form tbody tr:hover td { background: transparent; }
 .narrow { max-width: 11rem; }
 .left { margin-right: auto; }
 </style>

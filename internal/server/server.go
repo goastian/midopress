@@ -222,6 +222,7 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 	s.proxy = proxy.New(proxy.Options{
 		Observer:  &observer{s: s},
 		Magic:     magicHandler,
+		Discovery: http.HandlerFunc(s.discovery),
 		MagicHost: isMagic,
 		Metrics:   metricsHandler,
 		Auth:      a,

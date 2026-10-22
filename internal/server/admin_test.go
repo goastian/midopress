@@ -840,3 +840,77 @@ func TestBadBodies(t *testing.T) {
 	resp3, _ := a.call("POST", "/api/v1/stats", nil)
 	assert.Equal(t, 405, resp3.StatusCode, "the wrong method says so")
 }
+
+func TestProxyAutoConfigurationByOneAddress(t *testing.T) {
+	h := newHarness(t)
+	fetch := func(path, host string) (*http.Response, string) {
+		conn := h.rawConn()
+		_, _ = io.WriteString(conn, "GET "+path+" HTTP/1.1\r\nHost: "+host+"\r\nConnection: close\r\n\r\n")
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
+	}
+
+	resp, body := fetch("/proxy.pac", "192.168.1.20:9999")
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "application/x-ns-proxy-autoconfig", resp.Header.Get("Content-Type"))
+	assert.Contains(t, body, `return "PROXY 192.168.1.20:9999; DIRECT"`, "named by the address the device used")
+	assert.Contains(t, body, `"http:"`)
+	assert.NotContains(t, body, `"https:"`, "without a certificate only plain HTTP goes through")
+	assert.Contains(t, body, "DIRECT", "private networks are left alone")
+
+	resp, body = fetch("/proxy-full.pac", "proxy.home:9999")
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, body, `"https:"`)
+	assert.Contains(t, body, "PROXY proxy.home:9999")
+
+	resp, body = fetch("/proxy.pac", `x"; evil(); //`)
+	assert.Equal(t, 400, resp.StatusCode, "the host is put in code, so it must be a host")
+	assert.NotContains(t, body, "evil")
+
+	resp, _ = fetch("/proxy.pac", "[fe80::1]:9999")
+	assert.Equal(t, 200, resp.StatusCode)
+
+	noCA := newHarness(t, withoutMITM())
+	conn := noCA.rawConn()
+	_, _ = io.WriteString(conn, "GET /proxy-full.pac HTTP/1.1\r\nHost: a:1\r\nConnection: close\r\n\r\n")
+	r2, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	require.NoError(t, err)
+	_ = r2.Body.Close()
+	assert.Equal(t, 404, r2.StatusCode, "no certificate, no full file")
+}
+
+func TestDiscoveryDocumentFromOneAddress(t *testing.T) {
+	get := func(h *harness, host string) map[string]any {
+		conn := h.rawConn()
+		_, _ = io.WriteString(conn, "GET /.well-known/midopress.json HTTP/1.1\r\nHost: "+host+"\r\nConnection: close\r\n\r\n")
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, 200, resp.StatusCode)
+		var doc map[string]any
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
+		return doc
+	}
+
+	doc := get(newHarness(t), "press.example.org:9999")
+	assert.Equal(t, "midopress", doc["service"])
+	proxy := doc["proxy"].(map[string]any)
+	assert.Equal(t, "press.example.org", proxy["host"])
+	assert.Equal(t, "9999", proxy["port"])
+	pac := doc["pac"].(map[string]any)
+	assert.Equal(t, "http://press.example.org:9999/proxy.pac", pac["http"])
+	assert.Equal(t, "http://press.example.org:9999/proxy-full.pac", pac["full"])
+	https := doc["https"].(map[string]any)
+	assert.Equal(t, true, https["intercept"])
+	ca := https["ca"].(map[string]any)
+	assert.Len(t, ca["sha256"], 64)
+	assert.Contains(t, doc["profiles"], "balanced")
+	assert.NotContains(t, doc, "token")
+
+	noCA := get(newHarness(t, withoutMITM()), "press.example.org:9999")
+	assert.Nil(t, noCA["pac"].(map[string]any)["full"])
+	assert.Equal(t, false, noCA["https"].(map[string]any)["intercept"])
+}

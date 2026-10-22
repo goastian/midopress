@@ -3,15 +3,35 @@ import { computed, onMounted, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { getToken, onAuthChange, setToken } from './api/client'
 import { connected, halt, start, stats } from './composables/live'
-import { duration } from './composables/format'
+import { bytes, duration } from './composables/format'
+import { cycleTheme, setTheme, theme, type Theme } from './composables/theme'
 import { routes } from './router'
+import BrandMark from './components/BrandMark.vue'
+import UiNum from './components/UiNum.vue'
 import ToastHost from './components/ToastHost.vue'
-import UiIcon from './components/UiIcon.vue'
 
 const route = useRoute()
 const router = useRouter()
-const nav = routes.filter((r) => r.meta && 'icon' in r.meta)
+const nav = routes.filter((r) => r.meta && 'nav' in r.meta)
 const showShell = computed(() => !route.meta.public)
+const themes: { id: Theme; label: string }[] = [
+  { id: 'system', label: 'System' },
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+]
+
+const version = computed(() => {
+  const v = stats.value?.version ?? ''
+  const short = v.replace(/^v/, '').split(/[+-]/)[0]
+  return 'v' + short
+})
+
+const reqPerSec = computed(() => {
+  const s = stats.value?.series.seconds ?? []
+  const done = s.slice(-6, -1)
+  if (!done.length) return 0
+  return done.reduce((n, p) => n + p.requests, 0) / done.length
+})
 
 onMounted(() => {
   if (getToken()) start()
@@ -35,44 +55,34 @@ function logout() {
 <template>
   <RouterView v-if="!showShell" />
   <div v-else class="shell">
-    <aside class="side">
-      <RouterLink to="/" class="brand">
-        <img src="/favicon.svg" alt="" width="34" height="34" />
-        <span>MidoPress</span>
-      </RouterLink>
-      <nav class="nav" aria-label="Main">
-        <RouterLink v-for="r in nav" :key="r.name" :to="r.path">
-          <UiIcon :name="String(r.meta?.icon)" />
-          <span>{{ r.meta?.title }}</span>
-        </RouterLink>
-      </nav>
-      <div class="side-foot">
-        <div class="row tight small muted">
-          <span class="dot" :class="connected ? 'on' : 'off'" />
-          <span>{{ connected ? 'Live' : 'Reconnecting' }}</span>
-        </div>
-        <div v-if="stats" class="small muted">v{{ stats.version }} · up {{ duration(stats.uptime_seconds) }}</div>
-        <button class="btn ghost small" style="justify-content: flex-start; padding-left: 0" @click="logout">Sign out</button>
-      </div>
-    </aside>
-
     <header class="top">
-      <RouterLink to="/" class="brand"><img src="/favicon.svg" alt="" width="28" height="28" /><span>MidoPress</span></RouterLink>
-      <div class="row tight small muted">
-        <span class="dot" :class="connected ? 'on' : 'off'" />
-        <span>{{ connected ? 'Live' : 'Reconnecting' }}</span>
-        <button class="btn ghost small" @click="logout">Sign out</button>
+      <RouterLink to="/" class="brand"><BrandMark /><span>MidoPress</span></RouterLink>
+      <nav class="tabs" aria-label="Main">
+        <RouterLink v-for="r in nav" :key="r.name" :to="r.path" class="tab">{{ r.meta?.title }}</RouterLink>
+      </nav>
+      <div class="tools">
+        <span class="seg themes" role="group" aria-label="Theme">
+          <button v-for="t in themes" :key="t.id" type="button" :aria-pressed="theme === t.id" @click="setTheme(t.id)">{{ t.label }}</button>
+        </span>
+        <button type="button" class="btn small theme-cycle" :aria-label="`Theme: ${theme}. Change theme`" @click="cycleTheme">{{ themes.find((t) => t.id === theme)?.label }}</button>
+        <button type="button" class="btn small ghost" @click="logout">Sign out</button>
       </div>
     </header>
 
     <main class="main"><RouterView /></main>
 
-    <nav class="bottom" aria-label="Main">
-      <RouterLink v-for="r in nav" :key="r.name" :to="r.path">
-        <UiIcon :name="String(r.meta?.icon)" :size="22" />
-        <span>{{ String(r.meta?.title).split(' ')[0] }}</span>
-      </RouterLink>
-    </nav>
+    <footer class="status mono" aria-label="Status">
+      <span class="item"><span class="dot" :class="connected ? 'on' : 'off'" /> {{ connected ? 'live' : 'reconnecting' }}</span>
+      <template v-if="stats">
+        <span class="item"><b>{{ stats.connections.clients_active }}</b> {{ stats.connections.clients_active === 1 ? 'client' : 'clients' }}</span>
+        <span class="item"><b>{{ stats.connections.requests_in_flight }}</b> in flight</span>
+        <span class="item hide-sm"><b>{{ reqPerSec.toFixed(1) }}</b> req/s</span>
+        <span class="item saved">saved <b><UiNum :value="stats.totals.saved" :format="bytes" /></b></span>
+        <span class="spacer" />
+        <span class="item hide-sm">up {{ duration(stats.uptime_seconds) }}</span>
+        <span class="item hide-xs">{{ version }}</span>
+      </template>
+    </footer>
   </div>
   <ToastHost />
 </template>
@@ -80,136 +90,147 @@ function logout() {
 <style scoped>
 .shell {
   min-height: 100dvh;
-  display: grid;
-  grid-template-columns: var(--nav-w) minmax(0, 1fr);
-  grid-template-rows: auto 1fr;
-  grid-template-areas: 'side main';
 }
-.side {
-  grid-area: side;
+.top {
   position: sticky;
   top: 0;
-  height: 100dvh;
-  background: var(--green-900);
-  color: #e8f6ee;
-  display: flex;
-  flex-direction: column;
-  padding: 1rem 0.8rem;
-  gap: 1.2rem;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 0 1.75rem;
+  min-height: var(--topbar-h);
+  padding: 0 1.5rem;
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  font-weight: 800;
-  font-size: 1.15rem;
-  letter-spacing: -0.02em;
-  color: inherit;
+  gap: 0.55rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
   text-decoration: none;
-  padding: 0 0.4rem;
 }
-.nav {
+.tabs {
   display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+  align-items: stretch;
+  gap: 1.35rem;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
-.nav a {
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+.tab {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
-  padding: 0.6rem 0.75rem;
-  border-radius: var(--radius-sm);
-  color: #bfdccb;
+  color: var(--ink-2);
   text-decoration: none;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
 }
-.nav a:hover {
-  background: rgb(255 255 255 / 8%);
-  color: #fff;
+.tab:hover {
+  color: var(--ink);
 }
-.nav a.router-link-exact-active,
-.nav a.router-link-active:not([href='#/']) {
-  background: var(--green-600);
-  color: #fff;
+.tab.router-link-exact-active {
+  color: var(--ink);
+  font-weight: 500;
+  border-bottom-color: var(--ink);
 }
-.side-foot {
-  margin-top: auto;
+.tab:focus-visible {
+  outline-offset: -2px;
+}
+.tools {
   display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0 0.4rem;
+  align-items: center;
+  gap: 0.6rem;
 }
-.side-foot .muted,
-.side-foot .btn {
-  color: #9bbfab;
-}
-.top,
-.bottom {
+.theme-cycle {
   display: none;
 }
 .main {
-  grid-area: main;
-  padding: 1.5rem 1.6rem 2.5rem;
   min-width: 0;
 }
+.status {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  height: var(--statusbar-h);
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 0 1.5rem;
+  background: var(--paper);
+  border-top: 1px solid var(--rule);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.status b {
+  font-weight: 500;
+  color: var(--ink);
+}
+.status .saved b {
+  color: var(--leaf);
+}
+.status .item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.status .spacer {
+  flex: 1 1 auto;
+}
 
-@media (max-width: 860px) {
-  .shell {
-    display: block;
+@media (max-width: 720px) {
+  .top {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'brand tools' 'tabs tabs';
+    padding: 0 1rem;
+    gap: 0;
   }
-  .side {
+  .brand {
+    grid-area: brand;
+    min-height: var(--topbar-h);
+  }
+  .tools {
+    grid-area: tools;
+    gap: 0.25rem;
+  }
+  .tabs {
+    grid-area: tabs;
+    gap: 1.25rem;
+    margin: 0 -1rem;
+    padding: 0 1rem;
+    border-top: 1px solid var(--rule);
+  }
+  .tab {
+    min-height: 40px;
+  }
+  .themes {
     display: none;
   }
-  .top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    position: sticky;
-    top: 0;
-    z-index: 20;
-    height: var(--topbar-h);
-    padding: 0 0.9rem;
-    padding-top: env(safe-area-inset-top);
-    background: var(--green-900);
-    color: #e8f6ee;
+  .theme-cycle {
+    display: inline-flex;
   }
-  .top .brand {
-    font-size: 1.05rem;
+  .status {
+    padding: 0 1rem;
+    gap: 0.9rem;
   }
-  .top .btn {
-    color: #bfdccb;
+  .hide-sm {
+    display: none !important;
   }
-  .main {
-    padding: 1rem 0.9rem calc(var(--bottom-nav-h) + 1.5rem + env(safe-area-inset-bottom));
-  }
-  .bottom {
-    display: flex;
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 20;
-    height: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom));
-    padding-bottom: env(safe-area-inset-bottom);
-    background: var(--surface);
-    border-top: 1px solid var(--border);
-    overflow-x: auto;
-  }
-  .bottom a {
-    flex: 1 0 56px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 0.15rem;
-    font-size: 0.66rem;
-    font-weight: 600;
-    color: var(--muted);
-    text-decoration: none;
-  }
-  .bottom a.router-link-exact-active,
-  .bottom a.router-link-active:not([href='#/']) {
-    color: var(--accent-strong);
+}
+@media (max-width: 420px) {
+  .hide-xs {
+    display: none !important;
   }
 }
 </style>

@@ -51,33 +51,33 @@ function animated(p: ProfileInfo) {
         <select id="def-profile" class="select compact" :value="cfg.default_profile" :disabled="busy" @change="setDefault">
           <option v-for="p in cfg.profiles" :key="p.name" :value="p.name">{{ p.name }}</option>
         </select>
-        <span v-if="cfg.managed_by_ui.default_profile" class="badge">set in the interface</span>
+        <span v-if="cfg.managed_by_ui.default_profile" class="tag">set in the interface</span>
         <button class="btn small" @click="edit(null)">New profile</button>
       </div>
     </div>
-    <p class="muted small intro">
+    <p class="lede">
       The default profile applies to every request that no rule, device or header chooses another one for. Changes are applied at once without a restart.
     </p>
-    <div class="table-wrap">
-      <table class="tbl">
+    <div class="ledger-wrap">
+      <table class="ledger">
         <thead>
           <tr>
-            <th>Name</th>
-            <th class="hide-sm">Kind</th>
-            <th class="r" title="Lower is closer to the original">dssim</th>
-            <th>Formats</th>
-            <th class="hide-sm">Resize</th>
-            <th class="hide-sm">PNG palette</th>
-            <th class="hide-sm">Animated</th>
-            <th title="brotli / gzip / zstd levels">Text br/gz/zstd</th>
-            <th></th>
+            <th scope="col">Name</th>
+            <th class="hide-sm" scope="col">Kind</th>
+            <th class="r" scope="col" title="Lower is closer to the original">dssim</th>
+            <th scope="col">Formats</th>
+            <th class="hide-sm" scope="col">Resize</th>
+            <th class="hide-sm" scope="col">PNG palette</th>
+            <th class="hide-sm" scope="col">Animated</th>
+            <th class="hide-sm" scope="col" title="brotli / gzip / zstd levels">Text br/gz/zstd</th>
+            <th scope="col"><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="p in cfg.profiles" :key="p.name">
             <td class="nowrap">
               <span class="mono">{{ p.name }}</span>
-              <span v-if="p.name === cfg.default_profile" class="badge green defbadge">default</span>
+              <span v-if="p.name === cfg.default_profile" class="tag ok defbadge">default</span>
             </td>
             <td class="muted nowrap hide-sm">{{ kind(p) }}{{ p.lossless ? ', lossless' : '' }}</td>
             <td class="r mono">{{ p.lossless ? '-' : p.target_dssim }}</td>
@@ -85,8 +85,8 @@ function animated(p: ProfileInfo) {
             <td class="hide-sm">{{ p.resize_to_viewport ? 'to viewport' : 'no' }}</td>
             <td class="hide-sm">{{ p.quantize_png ? 'yes' : 'no' }}</td>
             <td class="hide-sm">{{ animated(p) }}</td>
-            <td class="mono nowrap">{{ p.text.brotli }} / {{ p.text.gzip }} / {{ p.text.zstd }}</td>
-            <td class="r"><button class="btn small" @click="edit(p)">Edit</button></td>
+            <td class="mono nowrap hide-sm">{{ p.text.brotli }} / {{ p.text.gzip }} / {{ p.text.zstd }}</td>
+            <td class="r"><button class="btn small ghost" :aria-label="`Edit profile ${p.name}`" @click="edit(p)">Edit</button></td>
           </tr>
         </tbody>
       </table>
@@ -102,8 +102,6 @@ function animated(p: ProfileInfo) {
   </section>
 </template>
 
-<style scoped src="./PagesOps.css"></style>
 <style scoped>
-.intro { margin-bottom: 0.6rem; max-width: 75ch; }
 .defbadge { margin-left: 0.5rem; }
 </style>
