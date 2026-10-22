@@ -32,6 +32,15 @@ type Options struct {
 	Upstream *upstream.Client
 	Pipeline *pipeline.Pipeline
 
+	// Observer is told about every response and every request in flight, for the
+	// statistics and the live list of the administration interface. Nil for none.
+	Observer Observer
+
+	// Magic answers the requests for MagicHost itself, which never leave the
+	// proxy: the page that explains how to install the certificate.
+	Magic     http.Handler
+	MagicHost func(host string) bool
+
 	// Metrics serves /metrics on the proxy port, to the clients the proxy
 	// accepts. Nil leaves the path unanswered.
 	Metrics http.Handler
@@ -48,6 +57,31 @@ type Options struct {
 	Logger           *slog.Logger
 	LogURLs          bool
 	HandshakeTimeout time.Duration
+}
+
+// Observation describes a response that went through the proxy.
+type Observation struct {
+	Time      time.Time
+	Method    string
+	Scheme    string
+	Host      string // without the port
+	Path      string // with the query
+	Status    int
+	Client    pipeline.Client
+	UserAgent string
+	// ReqHeader and RespHeader are the live headers: copy what you keep.
+	ReqHeader  http.Header
+	RespHeader http.Header
+	Outcome    pipeline.Outcome
+	Duration   time.Duration
+}
+
+// Observer watches the proxy. Both methods are called on the hot path and must
+// be quick.
+type Observer interface {
+	// Begin says a request of this client started; done says it ended.
+	Begin(c pipeline.Client) (done func())
+	Observe(o *Observation)
 }
 
 // Proxy is the HTTP handler. Use Handler for the listener clients connect to
@@ -243,9 +277,17 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported scheme", http.StatusBadRequest)
 		return
 	}
+	if p.opts.Magic != nil && p.opts.MagicHost != nil && p.opts.MagicHost(r.URL.Hostname()) {
+		p.opts.Magic.ServeHTTP(w, r)
+		return
+	}
 	p.requests.Add(1)
 	p.inflight.Add(1)
 	defer p.inflight.Add(-1)
+	cl := pipeline.ClientFrom(r.Context())
+	if p.opts.Observer != nil {
+		defer p.opts.Observer.Begin(cl)()
+	}
 
 	if httpx.IsUpgrade(r.Header) {
 		p.upgrade(w, r)
@@ -262,7 +304,15 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = resp.Body.Close() }()
 	httpx.RemoveHopByHop(resp.Header)
 
+	start := time.Now()
 	out := p.opts.Pipeline.Handle(w, r, resp)
+	if p.opts.Observer != nil {
+		p.opts.Observer.Observe(&Observation{
+			Time: start, Method: r.Method, Scheme: r.URL.Scheme, Host: r.URL.Hostname(), Path: r.URL.RequestURI(),
+			Status: resp.StatusCode, Client: cl, UserAgent: r.Header.Get("User-Agent"),
+			ReqHeader: r.Header, RespHeader: resp.Header, Outcome: out, Duration: time.Since(start),
+		})
+	}
 	p.bytesIn.Add(uint64(out.BytesIn))
 	p.bytesOut.Add(uint64(out.BytesOut))
 	if out.Err == nil {

@@ -33,6 +33,12 @@ func pickTarget(accept negotiate.Encodings) codec.Encoding {
 }
 
 func (p *Pipeline) handleText(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string, fl *flow) Outcome {
+	out := p.textFlow(w, req, resp, mt, fl)
+	out.Profile = fl.prof.Name
+	return out
+}
+
+func (p *Pipeline) textFlow(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string, fl *flow) Outcome {
 	if len(resp.Header["Content-Encoding"]) > 1 {
 		return p.passthrough(w, resp, PassEncoding)
 	}
@@ -156,10 +162,11 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, resp *http.Response, mt s
 			h.Set("Content-Length", strconv.Itoa(len(e.Data)))
 			w.WriteHeader(resp.StatusCode)
 			n, _ := w.Write(e.Data)
-			return Outcome{Reason: Transformed, BytesIn: in.n, BytesOut: int64(n), Written: true}
+			return Outcome{Reason: Transformed, BytesIn: in.n, BytesOut: int64(n), Written: true, Codec: "woff2", OutType: e.ContentType}
 		}
 	}
 
+	minified := false
 	if minify {
 		min := p.getBuf()
 		defer p.putBuf(min)
@@ -167,6 +174,7 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, resp *http.Response, mt s
 			err := minifier.Minify(mt, min, plain)
 			p.releaseCPU()
 			if err == nil && min.Len() > 0 {
+				minified = min.Len() < len(plain)
 				plain = min.Bytes()
 			}
 		}
@@ -197,7 +205,11 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, resp *http.Response, mt s
 	h.Set("Content-Length", strconv.Itoa(len(result)))
 	w.WriteHeader(resp.StatusCode)
 	n, _ := w.Write(result)
-	return Outcome{Reason: Transformed, BytesIn: in.n, BytesOut: int64(n), Written: true}
+	name := target.Token()
+	if target == codec.None {
+		name = "identity"
+	}
+	return Outcome{Reason: Transformed, BytesIn: in.n, BytesOut: int64(n), Written: true, Codec: name, Minified: minified}
 }
 
 // markRecoded adjusts the headers of a response whose bytes differ from the
@@ -286,7 +298,7 @@ func (p *Pipeline) textStream(w http.ResponseWriter, resp *http.Response, target
 	defer p.copyBufs.Put(bp)
 	buf := *bp
 
-	out := Outcome{Reason: Transformed, Written: true}
+	out := Outcome{Reason: Transformed, Written: true, Codec: target.Token()}
 	for {
 		n, rerr := in.Read(buf)
 		if n > 0 {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 func exec(t *testing.T, args ...string) (code int, stdout, stderr string) {
@@ -156,12 +157,24 @@ func TestCA(t *testing.T) {
 		assert.Equal(t, 1, code)
 	})
 
+	t.Run("a trust store of PKCS#12", func(t *testing.T) {
+		p12 := filepath.Join(t.TempDir(), "ca.p12")
+		code, _, errOut := exec(t, "ca", "export", "-ca", filepath.Join(dir, "ca.crt"), "-format", "p12", "-out", p12)
+		require.Equal(t, 0, code, errOut)
+		raw, err := os.ReadFile(p12)
+		require.NoError(t, err)
+		certs, err := pkcs12.DecodeTrustStore(raw, "midopress")
+		require.NoError(t, err)
+		assert.Len(t, certs, 1)
+		assert.True(t, certs[0].IsCA)
+	})
+
 	t.Run("bad usage", func(t *testing.T) {
 		code, _, _ := exec(t, "ca")
 		assert.Equal(t, 2, code)
 		code, _, _ = exec(t, "ca", "revoke")
 		assert.Equal(t, 2, code)
-		code, _, _ = exec(t, "ca", "export", "-format", "p12", "-ca", filepath.Join(dir, "ca.crt"))
+		code, _, _ = exec(t, "ca", "export", "-format", "p13", "-ca", filepath.Join(dir, "ca.crt"))
 		assert.Equal(t, 2, code)
 	})
 }

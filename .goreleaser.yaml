@@ -2,6 +2,10 @@ version: 2
 
 project_name: midopress
 
+before:
+  hooks:
+    - sh -c 'cd web && npm ci && npm run build'
+
 # No cgo: the image codecs run as WebAssembly inside the binary, so every
 # target is cross compiled from one runner.
 builds:

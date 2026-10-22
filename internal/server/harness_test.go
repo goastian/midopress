@@ -156,6 +156,14 @@ func withConfig(fn func(*config.Config)) harnessOption {
 	return func(h *harness) { fn(h.cfg) }
 }
 
+// withAdmin turns the administration server on, on a free port.
+func withAdmin() harnessOption {
+	return func(h *harness) {
+		h.cfg.Web.Enabled = true
+		h.cfg.Web.Addr = "127.0.0.1:0"
+	}
+}
+
 func withServerOption(o server.Option) harnessOption {
 	return func(h *harness) { h.serverOpts = append(h.serverOpts, o) }
 }
@@ -170,6 +178,8 @@ func newHarness(t testing.TB, opts ...harnessOption) *harness {
 	h := &harness{t: t, cfg: config.Default(), release: make(chan struct{})}
 	h.cfg.Pipeline.Image.Timeout = 30 * time.Second
 	h.cfg.Pipeline.Image.Warmup = false
+	h.cfg.Web.Enabled = false
+	h.cfg.Web.StateDir = t.TempDir()
 	h.cfg.Pipeline.Text.Minify = config.Minify{HTML: "off", CSS: "off", JS: "off", SVG: "off", JSON: "off"}
 	h.cfg.Listen.Addr = "127.0.0.1:0"
 	h.cfg.Server.ShutdownGrace = 3 * time.Second

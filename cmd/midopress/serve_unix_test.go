@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"syscall"
@@ -42,9 +43,11 @@ func TestServe(t *testing.T) {
 
 	var stderr syncBuffer
 	done := make(chan int, 1)
+	state := t.TempDir()
+	env := []string{"MIDOPRESS_WEB_ADDR=127.0.0.1:0", "MIDOPRESS_WEB_STATE_DIR=" + state}
 	go func() {
 		done <- run([]string{"-host", "127.0.0.1:0", "-user", "me", "-pass", "secret", "-jpeg", "0", "-log-format", "json"},
-			io.Discard, &stderr, nil)
+			io.Discard, &stderr, env)
 	}()
 
 	var addr string
@@ -58,6 +61,22 @@ func TestServe(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "the server must log its address: %s", stderr.String())
 	assert.Contains(t, stderr.String(), `"auth":"basic"`)
 	assert.Contains(t, stderr.String(), "credentials travel unencrypted", "basic auth without TLS must warn")
+
+	// the administration interface: its address and token are announced once
+	m := regexp.MustCompile(`http://(127\.0\.0\.1:\d+)/#/login\?token=([0-9a-f]{64})`).FindStringSubmatch(stderr.String())
+	require.NotNil(t, m, "the admin address and token must be shown: %s", stderr.String())
+	adminReq, _ := http.NewRequest(http.MethodGet, "http://"+m[1]+"/api/v1/about", nil)
+	adminResp, err := http.DefaultClient.Do(adminReq)
+	require.NoError(t, err)
+	_ = adminResp.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, adminResp.StatusCode, "no token, no way in")
+	adminReq.Header.Set("Authorization", "Bearer "+m[2])
+	adminResp, err = http.DefaultClient.Do(adminReq)
+	require.NoError(t, err)
+	_ = adminResp.Body.Close()
+	assert.Equal(t, http.StatusOK, adminResp.StatusCode)
+	assert.NotContains(t, stderr.String(), m[2]+`"`, "the token is not in the log")
+	assert.FileExists(t, filepath.Join(state, "admin.token"))
 
 	proxy := func(user *url.Userinfo) *http.Client {
 		u := &url.URL{Scheme: "http", Host: addr, User: user}

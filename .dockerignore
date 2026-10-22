@@ -6,3 +6,5 @@ docs
 *.crt
 *.key
 midopress
+web/node_modules
+internal/webui/dist/*

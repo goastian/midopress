@@ -124,7 +124,7 @@ func entryFor(res *img.Result, original int, minGain float64, expires time.Time)
 	if float64(len(res.Data)) > float64(original)*(1-minGain) {
 		return &xcache.Entry{Keep: true, Expires: expires}
 	}
-	return &xcache.Entry{Data: res.Data, ContentType: res.Format.MIME(), Expires: expires}
+	return &xcache.Entry{Data: res.Data, ContentType: res.Format.MIME(), Expires: expires, Metric: string(res.Metric), Measure: res.Measure}
 }
 
 // idle reports whether no job is waiting or running.

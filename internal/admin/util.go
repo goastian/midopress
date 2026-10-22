@@ -1,0 +1,8 @@
+package admin
+
+import (
+	"bytes"
+	"io"
+)
+
+func bytesReader(b []byte) io.ReadSeeker { return bytes.NewReader(b) }

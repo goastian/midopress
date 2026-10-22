@@ -209,3 +209,21 @@ func (s *Store) persist() error {
 	}
 	return nil
 }
+
+// SetProfile changes the profile of a device. The empty string means the default.
+func (s *Store) SetProfile(id, profile string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.devices {
+		if s.devices[i].ID == id {
+			old := s.devices[i].Profile
+			s.devices[i].Profile = profile
+			if err := s.persist(); err != nil {
+				s.devices[i].Profile = old
+				return err
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("auth: no device called %q", id)
+}

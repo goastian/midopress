@@ -211,6 +211,30 @@ metrics:
   # on the proxy port, to the clients the proxy accepts.
   addr: ""
 
+# The administration interface: dashboard, devices, live flows, rules and
+# profiles editor, certificate, logs. Open http://127.0.0.1:9998/ and sign in
+# with the token that `midopress admin token` shows.
+web:
+  enabled: true
+  # The loopback by default; anything else is protected by the token alone.
+  addr: 127.0.0.1:9998
+  # Where the token (admin.token) and what the interface saves (ui.yaml) live.
+  # Empty means ~/.midopress. What ui.yaml holds wins over this file.
+  state_dir: ""
+  admin_token_file: ""
+  # Start with the live list of flows (shows URLs, kept in memory only) and the
+  # aggregation by domain on. Both can be switched from the interface.
+  flows: false
+  domains: false
+  flow_buffer: 500
+  # Memory for the bodies of images, so original and result can be compared.
+  capture_bytes: 64MiB
+  # The name the proxy answers by itself with the page that explains how to
+  # install the certificate. Empty turns it off.
+  magic_host: midopress.it
+  # Serve the Go profiler under /debug/pprof on the administration server.
+  pprof: false
+
 log:
   level: info
   # text or json

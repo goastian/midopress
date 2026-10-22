@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -32,6 +33,7 @@ const usage = `usage: midopress [flags]
        midopress config check [flags]
        midopress ca init|export [flags]
        midopress device add|list|revoke -file devices.json [flags]
+       midopress admin token [-config file]
        midopress bench [flags] <directory with images>
        midopress version
 
@@ -53,6 +55,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) int {
 			return cmdCA(args[1:], stdout, stderr)
 		case "device":
 			return cmdDevice(args[1:], stdout, stderr)
+		case "admin":
+			return cmdAdmin(args[1:], stdout, stderr, environ)
 		case "bench":
 			return cmdBench(args[1:], stdout, stderr)
 		case "version":
@@ -227,9 +231,23 @@ func cmdServe(args []string, stdout, stderr io.Writer, environ []string) int {
 		log.Error("cannot start", "err", err)
 		return 1
 	}
+	log = srv.Logger()
 	if err := srv.Listen(); err != nil {
 		log.Error("cannot listen", "err", err)
 		return 1
+	}
+	if addr := srv.AdminAddr(); addr != nil {
+		token, created := srv.AdminToken()
+		log.Info("administration interface", "url", "http://"+addr.String()+"/", "token_file", cfg.Web.TokenPath())
+		if created {
+			// not through the logger: the token must not end up in a log
+			_, _ = fmt.Fprintf(stderr, "\nThe administration token was made. Open\n  http://%s/#/login?token=%s\nIt is kept in %s and `midopress admin token` shows it again.\n\n", addr, token, cfg.Web.TokenPath())
+		}
+		if host, _, err := net.SplitHostPort(addr.String()); err == nil {
+			if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
+				log.Warn("the administration interface listens beyond this machine: only the token protects it, put it behind TLS or keep web.addr on the loopback")
+			}
+		}
 	}
 
 	if cfg.Auth.Mode != "none" && cfg.Listen.TLS.Cert == "" {

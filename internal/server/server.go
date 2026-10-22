@@ -10,17 +10,23 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/goastian/midopress/internal/admin"
 	"github.com/goastian/midopress/internal/auth"
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/config"
+	"github.com/goastian/midopress/internal/flows"
 	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/magic"
 	"github.com/goastian/midopress/internal/metrics"
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/pipeline"
 	"github.com/goastian/midopress/internal/proxy"
 	"github.com/goastian/midopress/internal/rules"
+	"github.com/goastian/midopress/internal/stats"
 	"github.com/goastian/midopress/internal/textmin"
 	"github.com/goastian/midopress/internal/upstream"
 	"github.com/goastian/midopress/internal/xcache"
@@ -62,6 +68,21 @@ type Server struct {
 	registry *metrics.Registry
 	policy   *mitm.Policy
 
+	base      *config.Config // as it was read, before what the interface saved
+	current   atomic.Pointer[config.Config]
+	started   time.Time
+	logs      *admin.LogHub
+	collector *stats.Collector
+	flows     *flows.Store
+	ca        *mitm.CA
+	admin     *admin.Server
+	adminSrv  *http.Server
+	adminLn   net.Listener
+	adminTok  string
+	tokenNew  bool
+	cancel    context.CancelFunc
+	cfgMu     sync.Mutex
+
 	auth    *auth.Authenticator
 	pipe    *pipeline.Pipeline
 	proxy   *proxy.Proxy
@@ -80,10 +101,26 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &Server{cfg: cfg, log: log}
+	s := &Server{cfg: cfg, started: time.Now()}
 	for _, o := range opts {
 		o(s)
 	}
+	// what the web interface saved wins over the file, and is read again on every
+	// reload, so keep the configuration as it was before
+	base := *cfg
+	s.base = &base
+	ov, err := config.LoadOverrides(cfg.Web.UIPath())
+	if err != nil {
+		return nil, fmt.Errorf("settings of the interface: %w", err)
+	}
+	cfg.ApplyOverrides(ov)
+	s.current.Store(cfg)
+
+	s.logs = admin.NewLogHub(log.Handler(), 500)
+	log = slog.New(s.logs)
+	s.log = log
+	s.collector = stats.New(stats.Options{})
+	s.flows = flows.NewStore(cfg.Web.FlowBuffer, int64(cfg.Web.CaptureBytes))
 
 	a, err := auth.New(auth.Options{
 		Mode:          auth.Mode(cfg.Auth.Mode),
@@ -119,6 +156,7 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 			return nil, fmt.Errorf("mitm: %w", err)
 		}
 		caPEM = ca.CertPEM()
+		s.ca = ca
 	}
 
 	upOpts := upstream.Options{
@@ -169,7 +207,22 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 			metricsHandler = s.registry.Handler()
 		}
 	}
+	var magicHandler http.Handler
+	var isMagic func(string) bool
+	if s.ca != nil && cfg.Web.MagicHost != "" {
+		magicHandler, err = magic.New(magic.Options{
+			Host: cfg.Web.MagicHost, CertPEM: caPEM, ProxyAddr: cfg.Listen.Addr, Version: s.version, Me: s.me,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("magic host: %w", err)
+		}
+		host := cfg.Web.MagicHost
+		isMagic = func(h string) bool { return magic.IsMagic(h, host) }
+	}
 	s.proxy = proxy.New(proxy.Options{
+		Observer:  &observer{s: s},
+		Magic:     magicHandler,
+		MagicHost: isMagic,
 		Metrics:   metricsHandler,
 		Auth:      a,
 		Upstream:  upstream.New(upOpts),
@@ -213,6 +266,10 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 	s.main = newHTTP(s.proxy.Handler())
 	s.mitmSrv = newHTTP(s.proxy.MITMHandler())
 	s.mitmSrv.ConnContext = s.proxy.ConnContext
+
+	if err := s.newAdmin(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -268,10 +325,16 @@ func pipelineConfig(cfg *config.Config) (pipeline.Config, error) {
 	}, nil
 }
 
+// CacheLen is the number of entries the cache holds in memory.
+func (s *Server) CacheLen() int { return s.cache.Len() }
+
 // Listen opens the listening socket. Run calls it when it has not been called.
 func (s *Server) Listen() error {
 	if s.ln != nil {
 		return nil
+	}
+	if err := s.listenAdmin(); err != nil {
+		return err
 	}
 	ln, err := net.Listen("tcp", s.cfg.Listen.Addr)
 	if err != nil {
@@ -310,22 +373,50 @@ func (s *Server) Reload() error {
 	if err := s.auth.Reload(); err != nil {
 		errs = append(errs, fmt.Errorf("devices: %w", err))
 	}
-	if s.loader != nil {
-		if err := s.reloadConfig(); err != nil {
-			errs = append(errs, fmt.Errorf("configuration: %w", err))
-		}
+	if err := s.reloadConfig(); err != nil {
+		errs = append(errs, fmt.Errorf("configuration: %w", err))
 	}
 	return errors.Join(errs...)
+}
+
+// freshConfig reads the configuration as it is on disk, and puts what the
+// interface saved over it, or over the configuration the server started with
+// when it has no way to read the file again.
+func (s *Server) freshConfig() (*config.Config, error) {
+	var cfg *config.Config
+	if s.loader != nil {
+		c, err := s.loader()
+		if err != nil {
+			return nil, err
+		}
+		cfg = c
+	} else {
+		c := *s.base
+		cfg = &c
+	}
+	ov, err := config.LoadOverrides(cfg.Web.UIPath())
+	if err != nil {
+		return nil, err
+	}
+	cfg.ApplyOverrides(ov)
+	return cfg, nil
 }
 
 // reloadConfig reads the configuration again and applies the settings that can
 // change while running. It is all or nothing: a configuration that does not
 // validate changes nothing.
 func (s *Server) reloadConfig() error {
-	cfg, err := s.loader()
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	cfg, err := s.freshConfig()
 	if err != nil {
 		return err
 	}
+	return s.apply(cfg)
+}
+
+// apply puts a configuration in force. The caller holds cfgMu.
+func (s *Server) apply(cfg *config.Config) error {
 	if err := Check(cfg); err != nil {
 		return err
 	}
@@ -347,6 +438,7 @@ func (s *Server) reloadConfig() error {
 			s.level.Set(lv)
 		}
 	}
+	s.current.Store(cfg)
 	return nil
 }
 
@@ -356,6 +448,13 @@ func (s *Server) reloadConfig() error {
 func (s *Server) Run(ctx context.Context) error {
 	if err := s.Listen(); err != nil {
 		return err
+	}
+	ctx, s.cancel = context.WithCancel(ctx)
+	defer s.cancel()
+	if s.adminSrv != nil {
+		go func() { _ = s.adminSrv.Serve(s.adminLn) }()
+		defer func() { _ = s.adminSrv.Close() }()
+		defer s.admin.Close()
 	}
 	defer s.auth.Close()
 	defer s.cache.Close()

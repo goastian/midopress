@@ -3,6 +3,42 @@
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project uses [semantic versioning](https://semver.org/).
 
+## 0.3.0 (not tagged yet)
+
+A web interface and an administration API: operate MidoPress without touching
+files, and install the CA without reading documentation.
+
+### Added
+
+- Administration server (`web.addr`, `127.0.0.1:9998` by default) with the
+  interface embedded in the binary (`go:embed`) and a REST API with SSE. It is
+  documented in [docs/09-admin-api.md](docs/09-admin-api.md).
+- Pages: dashboard (savings in total, by type, codec and profile, hit rate,
+  latencies, connections, top domains), traffic (live flows with a filter in the
+  rules language, detail, original against compressed comparator with DSSIM,
+  HAR export), devices (connected clients, tokens, profile, QR for the Midori
+  extension), rules and profiles editor with live validation and "test a URL",
+  certificate, logs with a level that changes while running, and service.
+- The magic host `midopress.it`: the proxy answers it by itself with the page
+  that installs the CA (PEM, DER, PKCS#12, QR, steps per platform, trust check).
+- `midopress admin token` shows the admin token; `midopress ca export -format
+  p12` writes a PKCS#12 trust store (password `midopress`).
+- `web:` section in the configuration. What the interface saves goes to
+  `ui.yaml` in `web.state_dir` (`~/.midopress`) and wins over the file.
+
+### Changed (behavior you may notice)
+
+- The administration server is on by default, on the loopback. The first start
+  makes a token in `~/.midopress/admin.token` (permissions 600) and prints the
+  sign-in link once on stderr. Set `web.enabled: false` to turn it off.
+- Failed tokens are rate limited per address (8 wrong ones, one minute).
+- The live list of flows and the aggregation by domain are off until switched on;
+  they live in memory only and secret headers are never kept.
+- Building needs the interface: `cd web && npm ci && npm run build` before
+  `go build` (a plain `go build` works, and says the interface is not built).
+- The Docker image publishes 9998 as well and binds the interface to all
+  addresses inside the container.
+
 ## 0.2.0 (not tagged yet)
 
 The proxy core is rewritten. The findings of

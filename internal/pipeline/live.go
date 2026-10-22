@@ -102,24 +102,31 @@ func ClientFrom(ctx context.Context) Client {
 // token, then the X-MidoPress-Profile header, then a rule, then Save-Data
 // raising the default to at least saver, then the default.
 func (lv *live) pick(c Client, h http.Header, rule string) *img.Profile {
+	p, _ := lv.pickWithSource(c, h, rule)
+	return p
+}
+
+// pickWithSource also says where the choice came from: device, header, rule,
+// save-data or default.
+func (lv *live) pickWithSource(c Client, h http.Header, rule string) (*img.Profile, string) {
 	if p, ok := lv.profiles[c.Profile]; ok && c.Profile != "" {
-		return p
+		return p, "device"
 	}
 	if v := strings.ToLower(strings.TrimSpace(h.Get("X-MidoPress-Profile"))); v != "" {
 		if p, ok := lv.profiles[v]; ok {
-			return p
+			return p, "header"
 		}
 	}
 	if p, ok := lv.profiles[rule]; ok && rule != "" {
-		return p
+		return p, "rule"
 	}
 	prof := lv.profiles[lv.profile]
 	if strings.EqualFold(strings.TrimSpace(h.Get("Save-Data")), "on") && profileRank(prof.Name) < profileRank(img.ProfileSaver) {
 		if p, ok := lv.profiles[img.ProfileSaver]; ok {
-			return p
+			return p, "save-data"
 		}
 	}
-	return prof
+	return prof, "default"
 }
 
 // profileRank orders the built-in profiles from the most to the least careful;

@@ -10,6 +10,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
@@ -32,8 +34,63 @@ type Config struct {
 	// Rules decide what happens to each request, in order, see internal/rules.
 	Rules   []rules.Rule `yaml:"rules"`
 	Metrics Metrics      `yaml:"metrics"`
+	Web     Web          `yaml:"web"`
 	Log     Log          `yaml:"log"`
 }
+
+// Web configures the administration server and the magic host.
+type Web struct {
+	// Enabled turns the administration server on.
+	Enabled bool `yaml:"enabled"`
+	// Addr is where it listens. It is meant for the person who runs the proxy:
+	// the default is the loopback interface, and anything else needs the token.
+	Addr string `yaml:"addr"`
+	// AdminTokenFile holds the token that opens the administration interface. It
+	// is made, with permissions 600, the first time the proxy starts. Empty
+	// means admin.token in StateDir.
+	AdminTokenFile string `yaml:"admin_token_file"`
+	// StateDir is where the proxy keeps what the interface saves, and the token.
+	// Empty means ~/.midopress.
+	StateDir string `yaml:"state_dir"`
+	// Flows starts with the live list of flows on. The list shows URLs, so it is
+	// off unless asked for, and it is only kept in memory.
+	Flows bool `yaml:"flows"`
+	// Domains starts with the aggregation of traffic by domain on.
+	Domains bool `yaml:"domains"`
+	// FlowBuffer is how many flows are kept.
+	FlowBuffer int `yaml:"flow_buffer"`
+	// CaptureBytes is the memory used to keep the bodies of images, so that the
+	// original and the result of a flow can be compared. 0 keeps none.
+	CaptureBytes ByteSize `yaml:"capture_bytes"`
+	// MagicHost is the name the proxy answers by itself, with the page that
+	// explains how to install the certificate.
+	MagicHost string `yaml:"magic_host"`
+	// Pprof serves the Go profiler under /debug/pprof on the administration
+	// server.
+	Pprof bool `yaml:"pprof"`
+}
+
+// StateDirPath returns the directory of the state, with the default applied.
+func (w Web) StateDirPath() string {
+	if w.StateDir != "" {
+		return w.StateDir
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".midopress")
+	}
+	return ".midopress"
+}
+
+// TokenPath returns the file of the admin token.
+func (w Web) TokenPath() string {
+	if w.AdminTokenFile != "" {
+		return w.AdminTokenFile
+	}
+	return filepath.Join(w.StateDirPath(), "admin.token")
+}
+
+// UIPath returns the file where the settings saved from the interface live.
+func (w Web) UIPath() string { return filepath.Join(w.StateDirPath(), "ui.yaml") }
 
 // Cache configures the cache of recoded images, fonts and slowly compressed text.
 type Cache struct {
@@ -272,7 +329,14 @@ func Default() *Config {
 		Profiles: map[string]img.ProfileOverride{},
 		Rules:    []rules.Rule{},
 		Metrics:  Metrics{Prometheus: true},
-		Log:      Log{Level: "info", Format: "text"},
+		Web: Web{
+			Enabled:      true,
+			Addr:         "127.0.0.1:9998",
+			FlowBuffer:   500,
+			CaptureBytes: 64 << 20,
+			MagicHost:    "midopress.it",
+		},
+		Log: Log{Level: "info", Format: "text"},
 	}
 }
 
@@ -449,6 +513,20 @@ func (c *Config) Validate() error {
 		add("pipeline.image.max_pixels must be positive")
 	}
 
+	w := c.Web
+	if w.Enabled && strings.TrimSpace(w.Addr) == "" {
+		add("web.addr must be set when web.enabled is true")
+	}
+	if w.FlowBuffer < 1 || w.FlowBuffer > 10000 {
+		add("web.flow_buffer must be between 1 and 10000")
+	}
+	if w.CaptureBytes < 0 {
+		add("web.capture_bytes must not be negative")
+	}
+	if !validHostName(w.MagicHost) {
+		add("web.magic_host %q is not a host name", w.MagicHost)
+	}
+
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
 	default:
@@ -473,3 +551,26 @@ func (c *Config) Redacted() *Config {
 
 // YAML renders the configuration.
 func (c *Config) YAML() ([]byte, error) { return yaml.Marshal(c) }
+
+// validHostName accepts what can be written after http://: letters, digits,
+// hyphens and dots, with no port and no empty label. The empty name turns the
+// magic host off.
+func validHostName(h string) bool {
+	if h == "" {
+		return true
+	}
+	if len(h) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(h, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}

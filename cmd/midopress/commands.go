@@ -13,6 +13,10 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/goastian/midopress/internal/admin"
+	"github.com/goastian/midopress/internal/config"
+	"github.com/goastian/midopress/internal/magic"
+
 	"github.com/goastian/midopress/internal/auth"
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/server"
@@ -129,7 +133,7 @@ func caExport(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("midopress ca export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	certPath := fs.String("ca", filepath.Join(defaultCADir(), "ca.crt"), "path of the CA certificate")
-	format := fs.String("format", "pem", "output format: pem or der")
+	format := fs.String("format", "pem", "output format: pem, der or p12 (a trust store, password midopress)")
 	out := fs.String("out", "", "output file, stdout when empty")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -158,6 +162,13 @@ func caExport(args []string, stdout, stderr io.Writer) int {
 		payload = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes})
 	case "der":
 		payload = block.Bytes
+	case "p12":
+		p, err := magic.P12(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes}), magic.P12Password)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "midopress ca export:", err)
+			return 1
+		}
+		payload = p
 	default:
 		_, _ = fmt.Fprintf(stderr, "midopress ca export: unknown format %q\n", *format)
 		return 2
@@ -243,5 +254,38 @@ func cmdDevice(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "midopress device: unknown command %q\n", args[0])
 		return 2
 	}
+	return 0
+}
+
+// cmdAdmin handles `midopress admin token`: it shows the token that opens the
+// administration interface, making it if it is not there yet.
+func cmdAdmin(args []string, stdout, stderr io.Writer, environ []string) int {
+	if len(args) == 0 || args[0] != "token" {
+		_, _ = fmt.Fprintln(stderr, "usage: midopress admin token [-config file]")
+		return 2
+	}
+	fs := flag.NewFlagSet("midopress admin token", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "path of the YAML configuration file")
+	if err := fs.Parse(args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	cfg, err := config.Load(*configPath, environ)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "midopress admin token:", err)
+		return 1
+	}
+	token, created, err := admin.LoadOrCreateToken(cfg.Web.TokenPath())
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "midopress admin token:", err)
+		return 1
+	}
+	if created {
+		_, _ = fmt.Fprintf(stderr, "made a new token in %s\n", cfg.Web.TokenPath())
+	}
+	_, _ = fmt.Fprintln(stdout, token)
 	return 0
 }

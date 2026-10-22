@@ -30,6 +30,11 @@ if [ -n "${MIDOPRESS_CONFIG:-}" ]; then
     set -- -config "$MIDOPRESS_CONFIG" "$@"
 fi
 
+# the administration interface must be reachable from outside the container;
+# its token is in $data/admin.token (docker exec ... midopress admin token)
+export MIDOPRESS_WEB_ADDR="${MIDOPRESS_WEB_ADDR:-0.0.0.0:9998}"
+export MIDOPRESS_WEB_STATE_DIR="${MIDOPRESS_WEB_STATE_DIR:-$data}"
+
 exec midopress -host :9999 \
     -cert cert.crt -key cert.key \
     -ca ca.crt -cakey ca.key \

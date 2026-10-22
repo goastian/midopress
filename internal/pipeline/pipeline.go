@@ -170,6 +170,8 @@ type Pipeline struct {
 	mem    *semaphore.Weighted
 	inst   atomic.Pointer[instruments]
 
+	capture atomic.Bool
+
 	buffers  sync.Pool
 	copyBufs sync.Pool
 	reasons  [numReasons]atomic.Uint64
@@ -286,6 +288,49 @@ func (p *Pipeline) HostDecision(host string, src netip.Addr) rules.Decision {
 	return rs.EvaluateHost(host, src, netip.Addr{})
 }
 
+// SetCapture makes the pipeline hand out the bodies of the images it recodes in
+// the Outcome, so that the original and the result can be compared. It costs
+// nothing but a reference to what the cache holds anyway.
+func (p *Pipeline) SetCapture(on bool) { p.capture.Store(on) }
+
+// ClearCache drops everything the cache holds in memory and on disk.
+func (p *Pipeline) ClearCache() { p.cache.Clear() }
+
+// CacheStats returns the counters of the cache.
+func (p *Pipeline) CacheStats() xcache.Stats { return p.cache.Stats() }
+
+// CPU returns the slots of the limiter, the busy ones and the jobs waiting in
+// the background queue.
+func (p *Pipeline) CPU() (slots, busy, queued int) {
+	return cap(p.sem), len(p.sem), len(p.bg.queue)
+}
+
+// Engine returns the image engine.
+func (p *Pipeline) Engine() *img.Engine { return p.engine }
+
+// Profiles returns the profiles in use, by name, and the default one.
+func (p *Pipeline) Profiles() (map[string]*img.Profile, string) {
+	lv := p.live.Load()
+	return lv.profiles, lv.profile
+}
+
+// Decide says what the rules and the profile selection would do for a request,
+// without any body. It is what "test a URL" shows.
+func (p *Pipeline) Decide(req *http.Request, resp *http.Response, mt string) Decision {
+	lv := p.live.Load()
+	d := Decision{Profile: nil}
+	var dec rules.Decision
+	if lv.rules != nil && lv.rules.Len() > 0 {
+		c := rulesContext(req, resp, mt)
+		d.Explanations = lv.rules.Explain(c)
+		dec = lv.rules.Evaluate(c)
+	}
+	d.Action = dec.Action
+	d.Set = dec.Set
+	d.Profile, d.ProfileSource = lv.pickWithSource(ClientFrom(req.Context()), req.Header, dec.Profile)
+	return d
+}
+
 // WaitBackground waits until the background jobs are done or ctx ends, and
 // reports whether they are done.
 func (p *Pipeline) WaitBackground(ctx context.Context) bool {
@@ -324,6 +369,22 @@ type Outcome struct {
 	// aborted.
 	Err     error
 	Written bool
+
+	// What follows describes the response for the people who watch the proxy:
+	// the administration interface and the statistics.
+	Kind        string // image, text, font or other
+	ContentType string // of the response of the origin
+	OutType     string // of what was sent, when it is not the same
+	Codec       string // avif, webp, jxl, jpeg, png, gif, br, zstd, gzip, deflate, woff2 or identity
+	Profile     string
+	CacheHit    bool
+	Metric      string  // the measure that was used for an image, and what it reached
+	Measure     float64 //
+	Minified    bool
+	// Original and Result are the bodies of an image, kept only while capture
+	// is on. They are shared with the cache: do not change them.
+	Original []byte
+	Result   []byte
 }
 
 // Stats returns how many responses ended with each reason.
@@ -340,9 +401,32 @@ func (p *Pipeline) Stats() [NumReasons]uint64 {
 func (p *Pipeline) Handle(w http.ResponseWriter, req *http.Request, resp *http.Response) Outcome {
 	start := time.Now()
 	out := p.handle(w, req, resp)
+	out.ContentType = httpx.MediaType(resp.Header)
+	out.Kind = kindName(out.ContentType)
 	p.reasons[out.Reason].Add(1)
 	p.record(resp, out, time.Since(start))
 	return out
+}
+
+// Decision is the answer of Decide.
+type Decision struct {
+	Explanations  []rules.Explanation
+	Action        rules.Action
+	Set           map[string]any
+	Profile       *img.Profile
+	ProfileSource string
+}
+
+func kindName(mt string) string {
+	switch {
+	case fonts.Convertible(mt) || strings.HasPrefix(mt, "font/") || mt == "application/vnd.ms-fontobject":
+		return "font"
+	case kindOf(mt) == kindImage:
+		return "image"
+	case kindOf(mt) == kindText:
+		return "text"
+	}
+	return "other"
 }
 
 type kind uint8

@@ -12,27 +12,27 @@ import (
 type ProfileOverride struct {
 	// Base is the profile to start from, balanced when empty. For a built-in
 	// name it defaults to that profile itself.
-	Base string `yaml:"base"`
+	Base string `yaml:"base" json:"base,omitempty"`
 
-	TargetDSSIM       *float64      `yaml:"target_dssim"`
-	TargetSSIM        *float64      `yaml:"target_ssim"`
-	TargetSSIMULACRA2 *float64      `yaml:"target_ssimulacra2"`
-	Attempts          *int          `yaml:"attempts"`
-	Formats           []string      `yaml:"formats"`
-	ResizeToViewport  *bool         `yaml:"resize_to_viewport"`
-	PhotoColors       *int          `yaml:"photo_colors"`
-	QuantizePNG       *bool         `yaml:"quantize_png"`
-	AnimatedToStill   *bool         `yaml:"animated_to_still"`
-	AnimatedQuality   *int          `yaml:"animated_quality"`
-	Text              *TextOverride `yaml:"text"`
+	TargetDSSIM       *float64      `yaml:"target_dssim" json:"target_dssim,omitempty"`
+	TargetSSIM        *float64      `yaml:"target_ssim" json:"target_ssim,omitempty"`
+	TargetSSIMULACRA2 *float64      `yaml:"target_ssimulacra2" json:"target_ssimulacra2,omitempty"`
+	Attempts          *int          `yaml:"attempts" json:"attempts,omitempty"`
+	Formats           []string      `yaml:"formats" json:"formats,omitempty"`
+	ResizeToViewport  *bool         `yaml:"resize_to_viewport" json:"resize_to_viewport,omitempty"`
+	PhotoColors       *int          `yaml:"photo_colors" json:"photo_colors,omitempty"`
+	QuantizePNG       *bool         `yaml:"quantize_png" json:"quantize_png,omitempty"`
+	AnimatedToStill   *bool         `yaml:"animated_to_still" json:"animated_to_still,omitempty"`
+	AnimatedQuality   *int          `yaml:"animated_quality" json:"animated_quality,omitempty"`
+	Text              *TextOverride `yaml:"text" json:"text,omitempty"`
 }
 
 // TextOverride changes the text compression levels of a profile.
 type TextOverride struct {
-	Brotli       *int `yaml:"brotli"`
-	Gzip         *int `yaml:"gzip"`
-	Zstd         *int `yaml:"zstd"`
-	BrotliStatic *int `yaml:"brotli_static"`
+	Brotli       *int `yaml:"brotli" json:"brotli,omitempty"`
+	Gzip         *int `yaml:"gzip" json:"gzip,omitempty"`
+	Zstd         *int `yaml:"zstd" json:"zstd,omitempty"`
+	BrotliStatic *int `yaml:"brotli_static" json:"brotli_static,omitempty"`
 }
 
 // ParseFormat reads the name of a modern format: jxl, avif or webp.

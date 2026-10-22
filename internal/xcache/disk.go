@@ -404,3 +404,19 @@ func (d *diskTier) fill(s *Stats) {
 	s.DiskBytes, s.DiskItems = d.bytes, d.lru.Len()
 	d.mu.Unlock()
 }
+
+// clear removes every file. Writes that were queued are done first so that none
+// of them lands after.
+func (d *diskTier) clear() {
+	d.flush()
+	d.mu.Lock()
+	names := make([]string, 0, len(d.index))
+	for n := range d.index {
+		names = append(names, n)
+	}
+	d.index, d.lru, d.bytes = map[string]*diskItem{}, list.New(), 0
+	d.mu.Unlock()
+	for _, n := range names {
+		_ = os.Remove(d.path(n))
+	}
+}

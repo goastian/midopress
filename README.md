@@ -13,8 +13,9 @@ There is a section further down on what changed.
 The proxy core has been rewritten and tested hard: it should now be safe to put
 in front of real browsing, which compy was not. Images are recoded with modern
 formats (WebP, AVIF, JPEG XL) by a quality search that measures what it does, and
-the binary needs no C libraries. What it does not have yet is the web interface
-and per-user accounting. Those are the next phases.
+the binary needs no C libraries. It has a web interface to watch and run it (see
+[Administration interface](#administration-interface)). What it does not have yet
+is per-user accounting.
 
 Things you should know before running it for other people:
 
@@ -79,7 +80,8 @@ numbers are in [Benchmark](#benchmark).
 
 ## Installation
 
-You need Go 1.27. There is no C compiler, no cgo and no C library to install:
+You need Go 1.27, and Node 22 to build the web interface (a build without it
+still works, and the administration server then says so). There is no C compiler, no cgo and no C library to install:
 the image codecs run as WebAssembly inside the binary, so it is built with
 `CGO_ENABLED=0` for Linux, macOS and Windows.
 
@@ -88,6 +90,16 @@ Then:
 ```sh
 go install github.com/goastian/midopress/cmd/midopress@latest
 ```
+
+`go install` builds without the web interface, which is built from a clone:
+
+```sh
+git clone https://github.com/goastian/midopress && cd midopress
+(cd web && npm ci && npm run build)
+go build ./cmd/midopress
+```
+
+The releases and the Docker image include it.
 
 The binary ends up in `$(go env GOPATH)/bin/midopress`. From a clone of the
 repository, `go install ./cmd/midopress` works too. `midopress version` tells
@@ -300,6 +312,32 @@ it like a password. A CA made with `openssl` works too.
 Some sites must never be intercepted. A built-in list covers banks, government,
 health, password managers and Mozilla's own services; add more in
 `mitm.passthrough` as `example.com`, `*.example.com` or `~d <regex>`.
+
+## Administration interface
+
+MidoPress serves a web interface on `127.0.0.1:9998` (`web.addr`): a dashboard
+with the savings by type, codec and profile, hit rate and latencies; the devices
+that are connected and what they ask for; the live traffic with a comparison of
+each image against what it became; an editor of rules and profiles that applies
+without a restart; the certificate; the log, whose level changes while running;
+and the service controls. The first start makes a token and prints a sign-in link
+once on stderr. Later, `midopress admin token` shows it again. What you change
+in the interface is saved to `~/.midopress/ui.yaml` and wins over the
+configuration file. The API is in [docs/09-admin-api.md](docs/09-admin-api.md).
+
+Anyone with the token can change the configuration, so keep `web.addr` on the
+loopback, or put TLS in front of it. The live list of flows shows URLs: it is off
+until you turn it on, it only lives in memory, and cookies and authorization
+headers are never kept.
+
+When the proxy has a CA, a device that uses it can open `http://midopress.it`:
+the proxy answers that name by itself with a page that downloads the certificate
+(PEM, DER, PKCS#12), shows a QR, explains the steps for Android, iOS, Windows,
+macOS, Linux and Firefox, and checks whether the certificate is trusted.
+
+To work on the interface, run `npm run dev` in `web/`: Vite serves it on 5173
+with live reload and forwards `/api` to the running MidoPress (`MIDOPRESS_ADMIN`
+changes where).
 
 ## Docker
 

@@ -19,6 +19,10 @@ type Entry struct {
 	Keep bool
 	// Expires is when the entry stops being served, zero for never.
 	Expires time.Time
+	// Metric and Measure say how close an image is to the original. They live
+	// in memory only: an entry read from disk has none.
+	Metric  string
+	Measure float64
 }
 
 func (e *Entry) size() int64 { return int64(len(e.Data)) + 128 }
@@ -191,6 +195,21 @@ func (c *Cache) removeLocked(el *list.Element) {
 	c.ll.Remove(el)
 	delete(c.items, it.key)
 	c.bytes -= it.val.size()
+}
+
+// Clear drops everything, in memory and on disk.
+func (c *Cache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.ll.Init()
+	c.items = map[string]*list.Element{}
+	c.bytes = 0
+	c.mu.Unlock()
+	if c.disk != nil {
+		c.disk.clear()
+	}
 }
 
 // Len returns the number of entries in memory.

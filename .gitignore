@@ -6,3 +6,11 @@
 /docs/
 *.test
 *.prof
+
+# the built web interface (npm run build in web/) and node
+/internal/webui/dist/*
+!/internal/webui/dist/.gitkeep
+/web/node_modules/
+/web/dist/
+/web/test-results/
+/web/playwright-report/

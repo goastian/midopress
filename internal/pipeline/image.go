@@ -109,7 +109,30 @@ func imageKey(plain []byte, prof *img.Profile, caps img.Caps, hints img.Hints, f
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// imageDetail is what handleImage tells its caller about the response.
+type imageDetail struct {
+	entry *xcache.Entry
+	hit   bool
+	plain []byte
+}
+
 func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string, fl *flow) Outcome {
+	var d imageDetail
+	out := p.imageFlow(w, req, resp, mt, fl, &d)
+	out.Profile = fl.prof.Name
+	if out.Reason == Transformed && d.entry != nil {
+		out.OutType = d.entry.ContentType
+		out.Codec = strings.TrimPrefix(d.entry.ContentType, "image/")
+		out.CacheHit = d.hit
+		out.Metric, out.Measure = d.entry.Metric, d.entry.Measure
+		if p.capture.Load() {
+			out.Original, out.Result = d.plain, d.entry.Data
+		}
+	}
+	return out
+}
+
+func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string, fl *flow, d *imageDetail) Outcome {
 	ic := &p.cfg.Image
 	declared := img.JPEG
 	switch mt {
@@ -196,6 +219,7 @@ func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *h
 	input := img.Input{Raw: plain, Format: kind, Caps: caps, Profile: prof, Hints: hints, Fixed: fixed, Budget: ic.Timeout}
 
 	entry, ok := p.cache.Get(key)
+	d.hit, d.plain = ok, plain
 	if !ok {
 		res, err := p.recode(req.Context(), key, input)
 		switch {
@@ -225,6 +249,7 @@ func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *h
 	if entry.Keep || !p.worthIt(len(entry.Data), len(wire)) {
 		return p.writeBuffered(w, resp, wire, in.n, PassNotSmaller)
 	}
+	d.entry = entry
 	return p.writeRecoded(w, resp, srcEnc, entry, prof, hints, in.n)
 }
 
