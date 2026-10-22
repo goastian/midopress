@@ -30,11 +30,19 @@ Things you should know before running it for other people:
   JSON are minified in a safe mode that never changes how a page renders;
   JavaScript is not minified unless you ask.
 - Minifying a file breaks its Subresource Integrity (`integrity="..."`) hash, if
-  the page has one. Turn the kinds you do not want off in `pipeline.text.minify`.
-- Images are decoded in memory, about 4 bytes per pixel for each job that runs
-  at the same time. The defaults are safe for a small machine; see the
-  `pipeline` section of the [example configuration](examples/midopress.yaml)
-  before using a big one.
+  the page has one. The proxy reads the pages that go through it and never
+  minifies a script or style sheet that a page it has seen loads with an
+  `integrity` attribute. It can not know about one that a script adds later, so
+  turn the kinds you do not want off in `pipeline.text.minify`.
+- Images are decoded in memory, and that is expensive: measured, a recode holds
+  80 to 190 bytes per pixel at its peak (a 7.7 megapixel photo takes over a
+  gigabyte). `pipeline.memory_budget` bounds it; 0, the default, takes a quarter
+  of the memory of the machine or container (256 MiB to 8 GiB). A response that
+  finds no room waits up to `pipeline.transcode_wait` and then goes through as it
+  came, and its image is recoded in the background when room frees up, so the
+  next request gets it. A picture that would need more than the whole budget is
+  never recoded: with the smallest budget, 256 MiB, that is anything over about
+  1.3 megapixels in the profiles that try AVIF.
 - There are no per-user quotas or accounting yet.
 
 ## What it does
@@ -44,10 +52,19 @@ Things you should know before running it for other people:
 - Recompresses gzip, deflate and zstd responses as brotli when the browser
   supports it, the result is smaller and the size of the response is known and
   under 1 MiB. Larger ones, and ones of unknown length, keep the origin's
-  compression.
+  compression. A response that the origin already sends as brotli is recompressed
+  at the slowest levels (10 or 11, which give about a tenth less) when the
+  profile allows it (`balanced` at 10, `saver` and `extreme` at 11) and the
+  response can be cached; bodies too big to make a request wait for that are
+  finished in the background.
 - Recodes JPEG, PNG and GIF images with the best format the browser says it
   accepts (JPEG XL, AVIF, WebP, else a better JPEG made with jpegli or an
   optimized PNG), at the lowest quality that keeps the picture looking the same.
+  The WebP and AVIF pictures that sites already send are recoded too, measured
+  against what the site sent, and the original goes when nothing smaller is as
+  good (`pipeline.image.modern`). Animated ones, and any that carry a colour
+  profile other than sRGB, an orientation or a crop, are left alone; so is JPEG
+  XL unless its header says plain sRGB with no alpha plane.
   Animated GIFs become animated WebP, and animated PNG is left alone. Colour
   profiles other than sRGB are never dropped, and the EXIF orientation is applied
   to the pixels before the metadata is removed.
@@ -62,9 +79,10 @@ Things you should know before running it for other people:
   and text of known size under 1 MiB), the original is sent unless the result is
   at least 2% smaller. Text of unknown length is compressed as it streams, so it
   can not be checked, and incompressible text grows by under 1%.
-- Leaves alone what it should not touch: `Cache-Control: no-transform`, range
-  requests, `HEAD`, redirects and errors, event streams, anything it does not
-  recognize, and anything that fails to convert.
+- Leaves alone what it should not touch: `Cache-Control: no-transform` (but see
+  [no-transform](#no-transform)), range requests, `HEAD`, redirects and errors,
+  event streams, anything it does not recognize, and anything that fails to
+  convert.
 - Tunnels WebSockets and any other `CONNECT` traffic, including HTTP/2 to the
   proxy.
 - Can intercept HTTPS with a certificate authority of yours, to compress it
@@ -174,6 +192,39 @@ Pictures with few colours (logos, screenshots, icons) are graphics and stay
 lossless in every profile except `extreme`. Photographs, including PNG
 photographs, are recoded against the similarity target.
 
+A profile that resizes (`saver`, `extreme`) needs to know how big the picture is
+shown. When the client does not say it, the proxy uses what the page said: it
+reads the `width` of the `<img>` tags of the HTML that goes by, remembers it for
+the address of each image, and assumes `pipeline.image.hint_dpr` (2) pixels per
+CSS pixel (`pipeline.image.page_hints` turns it off). It works for pages that
+reach the proxy, which is not the case for a page the browser has in its cache.
+
+`saver` and `extreme` also minify JavaScript (`balanced` and `lossless` do not),
+and `saver` and `extreme` wait longer for the slow brotli levels.
+Every one of these is a field of the profile (`effort`, `no_transform`,
+`minify_js`, `text.static_wait_ms`) that can be changed in the interface or in
+`pipeline.profiles`.
+
+#### no-transform
+
+`Cache-Control: no-transform` asks proxies not to change a response. RFC 9111 made
+it for operators that recoded content on the way to a person. Here the proxy is the
+one the person chose, and an image is only replaced by a result that was measured
+against it, so `pipeline.no_transform` says what to do:
+
+| value | what it does |
+|---|---|
+| `profile` (default) | what the profile says: `lossless` and `balanced` respect it, `saver` and `extreme` recode the images that carry it |
+| `respect` | always keep it |
+| `images` | recode the images that carry it, in every profile |
+| `all` | recode text too, which can break files that are signed or hashed |
+
+A rule can change it for a site (`set: {no_transform: images}`). A request that
+says no-transform is always respected, and so are range requests, SVG and fonts
+unless the value is `all`. The responses that were recoded anyway are counted in
+`midopress_pipeline_no_transform_overridden_total`. The risk is a URL that is
+signed for exactly those bytes; if a site breaks, add a rule for it.
+
 ### Speed
 
 WebAssembly is about ten times slower than native code for AVIF and JPEG XL, a
@@ -181,12 +232,37 @@ second or more per megapixel. The proxy copes in two ways. An image that does no
 fit in `pipeline.image.timeout` is sent as it is (or as a fast jpegli/WebP
 recoding) and finished in the background, and the next request gets the best
 result from the cache. And if the shared libraries of libwebp, libavif and libjxl
-are installed, the codecs find and use them without cgo, which is about ten times
-faster. The Docker image can include them with `--build-arg NATIVE_CODECS=1`; it
-is off by default because one stress run of that path (about ten runs in total)
-crashed inside the C library bindings. The libjxl library also lets the proxy
-recompress JPEG files into JPEG XL without losing a bit (15.9% smaller on the test
-corpus), which nothing else here does.
+are installed, the codecs find and use them without cgo, which is 3 to 10 times
+faster (on three WebP and AVIF files, 1.7 s per image in `balanced` against 6.6 s
+with WebAssembly, and 0.77 s in `extreme` against 2.4 s). The Docker image can
+include them with `--build-arg NATIVE_CODECS=1`; it is off by default because one
+stress run of that path (about ten runs in total) once crashed inside the C
+library bindings. The same test was repeated on a current system with ten runs of
+40 to 60 s (`TestNativeCodecsUnderGCStress`, and did not crash, but that is not a
+proof, so the service should restart by itself if it dies.
+The libjxl library also lets the proxy recompress JPEG files into JPEG XL without
+losing a bit (15.9% smaller on the test corpus), which nothing else here does.
+
+The libraries are found by the name `libavif.so`, `libwebp.so`, `libwebpdemux.so`
+and `libjxl.so`. A system that only has the versioned files (`libavif.so.16`) and
+no development packages can still use them without root, with a directory of
+links:
+
+```sh
+mkdir -p ~/.midopress/native && cd ~/.midopress/native
+ln -sf /usr/lib64/libavif.so.16 libavif.so
+ln -sf /usr/lib64/libwebp.so.7 libwebp.so
+ln -sf /usr/lib64/libwebpdemux.so.2 libwebpdemux.so
+ln -sf /usr/lib64/libjxl.so.0.12 libjxl.so
+LD_LIBRARY_PATH=~/.midopress/native midopress
+```
+
+`/api/v1/about` says which formats use them (`native`). AVIF takes the effort of
+the profile (`avif_effort`: 4 in `balanced`, 5 in `saver` and `extreme`) when it
+runs natively, and never more than 2 with WebAssembly. On 26 photographs, against
+the old default of 3, 4 saved 0.6 to 1.2 points more of the bytes at the same
+time in `balanced`, and 5 saved 1.4 to 2.7 more in about twice the time; 6 was
+slower again and, in `saver`, saved less, so it is not offered as a default.
 
 ### libvips backend
 
@@ -236,8 +312,12 @@ restarts. The origin's `Cache-Control` and `Expires` choose how long, between
 ### Metrics
 
 `/metrics` has the Prometheus text format: requests and bytes, what the pipeline did
-with each response and why, the time of each step, cache hits and hit rate, the
-background queue, and the Go and process collectors. It is served on the proxy
+with each response and why (`midopress_pipeline_reason_responses_total` and
+`midopress_pipeline_reason_bytes_total` by reason and kind of content, and the
+`cause` versions that say why it was busy, which media types it does not handle
+and who forbade a transformation), the bytes of the HTTPS tunnels that are not
+decrypted, the memory budget and what is reserved, the time of each step, cache
+hits and hit rate, the background queue, and the Go and process collectors. It is served on the proxy
 port to the clients the proxy accepts, or on its own listener with
 `metrics.addr`.
 
@@ -316,7 +396,10 @@ health, password managers and Mozilla's own services; add more in
 ## Administration interface
 
 MidoPress serves a web interface on `127.0.0.1:9998` (`web.addr`): a dashboard
-with the savings by type, codec and profile, hit rate and latencies; the devices
+that separates what it can shrink (images, text, fonts) from video and audio,
+which it passes as they come, and from the HTTPS tunnels it never opens, with
+the reasons and causes of the bytes that were not saved and, if you turn the
+tracking of domains on, the hosts they came from; the devices
 that are connected and what they ask for; the live traffic with a comparison of
 each image against what it became; an editor of rules and profiles that applies
 without a restart; the certificate; the log, whose level changes while running;
@@ -383,6 +466,22 @@ benchmarks of the whole proxy:
 ```sh
 go test -run '^$' -bench . -benchmem ./internal/server/
 ```
+
+`scripts/deploy.sh` builds the interface (when its sources changed) and the
+binary, and restarts the `midopress` user service. `web/scenarios/` measures what
+the proxy does with real sites and with a fixed set of files, against any binary:
+
+```sh
+cd web
+node scenarios/run.mjs --bin ../bin/midopress --label after      # news, social feed, shop, GitHub, YouTube, HLS
+node scenarios/replay.mjs --bin ../bin/midopress --dir ../artifacts/corpus-images --label images   # the same files, cold and warm
+node scenarios/table.mjs ../artifacts/scenarios/after.json       # the results as Markdown
+```
+
+Real sites change from one run to the next: compare two binaries in the same
+hour (the runs alternate them), and use `replay.mjs`, which serves the same bytes
+every time, for what the code did. It needs Chromium from Playwright
+(`npx playwright install chromium`) for `run.mjs`.
 
 ## What changed from compy
 
