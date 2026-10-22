@@ -3,6 +3,69 @@
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project uses [semantic versioning](https://semver.org/).
 
+## 0.3.1 (not tagged yet)
+
+Every byte that was not saved has a name now, and more of what can be shrunk is.
+
+### Added
+
+- Dashboard: the headline is the saving on what can be shrunk (images, text,
+  fonts), with video and audio (`media`, a new kind) and the HTTPS tunnels that
+  are never opened beside it, as their own numbers. Under it, why bytes were left
+  alone by reason and kind, the causes, and, with the tracking of domains on, the
+  ten hosts with the most bytes that were not saved and which hosts each reason
+  came from. What no profile applied to is `-`, not `unknown`.
+- `GET /api/v1/stats/missed?reason=&limit=` lists the hosts that had responses
+  left alone for a reason. `StatsSnapshot` has `by_reason`, `by_cause` and
+  `top_missed`, and `connections` the live bytes of the tunnels.
+- Prometheus: `midopress_pipeline_reason_{responses,bytes}_total{reason,kind}`,
+  `midopress_pipeline_cause_{responses,bytes}_total{reason,cause}`,
+  `midopress_tunnel_{up,down}_bytes_total`,
+  `midopress_pipeline_no_transform_overridden_total`,
+  `midopress_pipeline_memory_{budget,reserved}_bytes` and
+  `midopress_pipeline_memory_wait_seconds`.
+- WebP and AVIF pictures that sites already send are recoded, measured against
+  what the site sent (`pipeline.image.modern`, on). JPEG XL too, when its header
+  says plain sRGB with no alpha plane. Animations, colour profiles other than
+  sRGB, orientations and crops are left alone, because a recode would drop them.
+- `pipeline.no_transform` (`profile`, `respect`, `images`, `all`), a
+  `no_transform` field in every profile and a `set: {no_transform: ...}` key in
+  rules. `saver` and `extreme` recode the images that say no-transform; the other
+  two respect it.
+- The pages that go through the proxy are read: the width an `<img>` is shown at
+  becomes the size for profiles that resize when the client does not say its
+  screen (`pipeline.image.page_hints`, `hint_dpr`), and a script or style sheet
+  that a page loads with an `integrity` hash is never minified.
+- Profile fields `avif_effort`, `no_transform`, `minify_js` and
+  `text.static_wait_ms`, in the interface, the API and `pipeline.profiles`.
+- `scripts/deploy.sh` builds and restarts the user service;
+  `web/scenarios/` runs six scenarios (news, social feed, shop, GitHub, YouTube
+  and an HLS stream) through a throw-away proxy and writes the bytes by kind,
+  and replays fixed sets of files (images, and text recorded as the origins send
+  it) through any binary, so that two of them can be compared on the same bytes.
+- `midopress bench` takes WebP and AVIF files and `-effort`.
+
+### Changed (behavior you may notice)
+
+- `pipeline.memory_budget` is 0 by default, which takes a quarter of the memory of
+  the machine or container (256 MiB to 8 GiB); it was 256 MiB. A recode holds 80
+  to 190 bytes per pixel, not the 12 that were counted, so the old number let big
+  images through that the budget did not see and refused many that fit. The
+  memory of a body is reserved as it arrives, a response waits up to
+  `transcode_wait` for room before it goes through as it came, and an image that
+  is already in the cache needs none.
+- A response that was not recoded because no CPU slot came free now leaves its
+  job for the background, so the next request finds the result.
+- Metrics of fonts have the kind `font`, not `text`, and `other` is split into
+  `media` and `other`.
+- JavaScript is minified in `saver` and `extreme`; origins that already send
+  brotli are recompressed at level 10 (`balanced`) or 11 (`saver`, `extreme`)
+  when the response can be cached, with a wait per profile
+  (`text.static_wait_ms`) after which it is done in the background.
+- AVIF is encoded with more effort: 4 in `balanced`, 5 in `saver` and `extreme`
+  (3 before). It only applies to the native library; WebAssembly keeps its own.
+- Tunnel bytes are counted while the tunnel is open, not when it closes.
+
 ## 0.3.0 (not tagged yet)
 
 A web interface and an administration API: operate MidoPress without touching
