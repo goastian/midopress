@@ -59,6 +59,20 @@ jobs:
           docker logs midopress
           exit 1
 
+  # The optional libvips backend needs cgo and the library, so it has a job of
+  # its own. The default build never sees it.
+  test-vips:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install libvips
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev
+      - run: go vet -tags vips ./internal/img/
+      - run: go test -tags vips -count=1 -run 'Vips' ./internal/img/
+
   test-macos:
     runs-on: macos-latest
     steps:

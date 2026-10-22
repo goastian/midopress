@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,10 @@ type Options struct {
 	Auth     *auth.Authenticator
 	Upstream *upstream.Client
 	Pipeline *pipeline.Pipeline
+
+	// Metrics serves /metrics on the proxy port, to the clients the proxy
+	// accepts. Nil leaves the path unanswered.
+	Metrics http.Handler
 
 	// Issuer and Policy enable HTTPS interception. Without them every CONNECT
 	// request becomes a plain tunnel.
@@ -96,6 +101,21 @@ func (p *Proxy) Handler() http.Handler { return http.HandlerFunc(p.serve) }
 // MITMHandler returns the handler for requests found inside intercepted TLS
 // connections.
 func (p *Proxy) MITMHandler() http.Handler { return http.HandlerFunc(p.serveMITM) }
+
+// ConnContext is for the http.Server of intercepted connections: it gives each
+// request the client that opened the tunnel it came through.
+func (p *Proxy) ConnContext(ctx context.Context, c net.Conn) context.Context {
+	if tc, ok := c.(*tls.Conn); ok {
+		if hc, ok := tc.NetConn().(*hostConn); ok {
+			cl := pipeline.Client{Device: hc.device, Profile: p.opts.Auth.DeviceProfile(hc.device)}
+			if ap, err := netip.ParseAddrPort(c.RemoteAddr().String()); err == nil {
+				cl.Addr = ap.Addr()
+			}
+			return pipeline.WithClient(ctx, cl)
+		}
+	}
+	return ctx
+}
 
 // MITMListener returns the listener that yields the decrypted connections.
 func (p *Proxy) MITMListener() net.Listener { return p.ml }
@@ -167,7 +187,8 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if d := p.opts.Auth.Check(r.RemoteAddr, r.Header.Get("Proxy-Authorization")); !d.Allowed {
+	d := p.opts.Auth.Check(r.RemoteAddr, r.Header.Get("Proxy-Authorization"))
+	if !d.Allowed {
 		p.denied.Add(1)
 		switch d.Status {
 		case http.StatusProxyAuthRequired:
@@ -178,6 +199,12 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(d.Status)
 		return
 	}
+
+	cl := pipeline.Client{Device: d.Device, Profile: p.opts.Auth.DeviceProfile(d.Device)}
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		cl.Addr = ap.Addr()
+	}
+	r = r.WithContext(pipeline.WithClient(r.Context(), cl))
 
 	switch {
 	case r.Method == http.MethodConnect:
@@ -310,6 +337,8 @@ func (p *Proxy) handleLocal(w http.ResponseWriter, r *http.Request) {
 </body>
 </html>
 `, s.BytesIn, s.BytesOut, html.EscapeString(ratio), s.Requests, s.Tunnels, cert, "https://github.com/goastian/midopress")
+	case r.Method == http.MethodGet && r.URL.Path == "/metrics" && p.opts.Metrics != nil:
+		p.opts.Metrics.ServeHTTP(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/cacert" && len(p.opts.CACertPEM) > 0:
 		h.Set("Content-Type", "application/x-x509-ca-cert")
 		h.Set("Content-Disposition", `attachment; filename="midopress-ca.crt"`)

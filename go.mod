@@ -4,6 +4,9 @@ go 1.27
 
 require (
 	github.com/andybalholm/brotli v1.2.6
+	github.com/davidbyttow/govips/v2 v2.20.0
+	github.com/ebitengine/purego v0.10.1
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gen2brain/avif v0.6.0
 	github.com/gen2brain/jpegli v0.4.2
 	github.com/gen2brain/jpegxl v0.6.0
@@ -19,9 +22,9 @@ require (
 )
 
 require (
-	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

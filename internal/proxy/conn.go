@@ -13,7 +13,8 @@ import (
 // that the TLS layer can fall back to it when the ClientHello has no SNI.
 type hostConn struct {
 	net.Conn
-	host string
+	host   string
+	device string // the device that opened the tunnel, empty without tokens
 }
 
 func closeWrite(c net.Conn) error {

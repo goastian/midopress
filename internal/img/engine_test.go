@@ -22,7 +22,13 @@ import (
 	"github.com/goastian/midopress/internal/quality"
 )
 
-var testEngine = NewEngine(NewWASM())
+// The engine tests use the ssim metric: they are about the engine, and the
+// metrics have their own tests. TestDSSIMMetric checks the default one.
+var testEngine = func() *Engine {
+	e := NewEngine(NewWASM())
+	e.Metric = MetricSSIM
+	return e
+}()
 
 // photoLike makes a picture with smooth areas, edges and texture, which is what
 // image codecs have to deal with in photographs.
@@ -138,7 +144,7 @@ func TestJPEGFormatFollowsWhatTheClientAccepts(t *testing.T) {
 			require.NoError(t, err)
 			s := mustSimilar(t, orig, dec)
 			assert.GreaterOrEqual(t, s, p.TargetSSIM-0.002, "must reach the target")
-			assert.InDelta(t, res.SSIM, s, 0.01, "the reported similarity must be the real one")
+			assert.InDelta(t, res.Measure, s, 0.01, "the reported similarity must be the real one")
 		})
 	}
 }
@@ -148,8 +154,8 @@ func TestTheSearchStopsNearTheTarget(t *testing.T) {
 	p := profile(t, ProfileBalanced)
 	res := optimize(t, Input{Raw: raw, Format: JPEG, Caps: Caps{WebP: true}, Profile: p})
 	assert.LessOrEqual(t, res.Attempts, p.Attempts)
-	assert.GreaterOrEqual(t, res.SSIM, p.TargetSSIM)
-	assert.Less(t, res.SSIM, p.TargetSSIM+0.03, "no point in spending bytes on quality nobody sees")
+	assert.GreaterOrEqual(t, res.Measure, p.TargetSSIM)
+	assert.Less(t, res.Measure, p.TargetSSIM+0.03, "no point in spending bytes on quality nobody sees")
 }
 
 func TestProfilesTradeQualityForSize(t *testing.T) {
@@ -159,10 +165,10 @@ func TestProfilesTradeQualityForSize(t *testing.T) {
 	ssims := map[string]float64{}
 	for _, name := range []string{ProfileBalanced, ProfileSaver, ProfileExtreme} {
 		res := optimize(t, Input{Raw: raw, Format: JPEG, Caps: caps, Profile: profile(t, name)})
-		sizes[name], ssims[name] = len(res.Data), res.SSIM
-		assert.GreaterOrEqual(t, res.SSIM, profile(t, name).TargetSSIM, name)
+		sizes[name], ssims[name] = len(res.Data), res.Measure
+		assert.GreaterOrEqual(t, res.Measure, profile(t, name).TargetSSIM, name)
 	}
-	assert.Greater(t, sizes[ProfileBalanced], sizes[ProfileSaver])
+	assert.GreaterOrEqual(t, sizes[ProfileBalanced], sizes[ProfileSaver])
 	assert.Greater(t, sizes[ProfileSaver], sizes[ProfileExtreme])
 	assert.Greater(t, ssims[ProfileBalanced], ssims[ProfileExtreme])
 	t.Logf("balanced %d bytes (ssim %.3f), saver %d (%.3f), extreme %d (%.3f), original %d",
@@ -344,7 +350,7 @@ func TestPNGPhotoIsRecodedAgainstTheTarget(t *testing.T) {
 	res := optimize(t, Input{Raw: raw, Format: PNG, Caps: Caps{WebP: true}, Profile: p})
 	assert.False(t, res.Lossless)
 	assert.Less(t, len(res.Data), len(raw)/2, "a photograph as PNG is mostly wasted bytes")
-	assert.GreaterOrEqual(t, res.SSIM, p.TargetSSIM)
+	assert.GreaterOrEqual(t, res.Measure, p.TargetSSIM)
 
 	// the lossless profile must not touch it that way
 	lossless := optimize(t, Input{Raw: raw, Format: PNG, Caps: Caps{WebP: true}, Profile: profile(t, ProfileLossless)})

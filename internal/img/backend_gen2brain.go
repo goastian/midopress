@@ -140,7 +140,11 @@ func (*WASM) Decode(f Format, data []byte) (image.Image, error) {
 	case JPEG:
 		return stdjpeg.Decode(r)
 	case WebP:
-		return webp.Decode(r)
+		m, err := webp.Decode(r)
+		if err != nil {
+			return nil, err
+		}
+		return webpToRGBA(m), nil
 	case AVIF:
 		return avif.Decode(r)
 	case JXL:

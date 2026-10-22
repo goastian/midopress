@@ -5,7 +5,9 @@ package pipeline
 
 import (
 	"bytes"
+	"context"
 	"net/http"
+	"net/netip"
 	"runtime"
 	"strings"
 	"sync"
@@ -19,6 +21,7 @@ import (
 	"github.com/goastian/midopress/internal/fonts"
 	"github.com/goastian/midopress/internal/httpx"
 	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/rules"
 	"github.com/goastian/midopress/internal/textmin"
 	"github.com/goastian/midopress/internal/xcache"
 )
@@ -50,13 +53,14 @@ const (
 	PassNotSmaller
 	PassError
 	PassBudget
+	PassRule
 	numReasons
 )
 
 var reasonNames = [numReasons]string{
 	"transformed", "method", "status", "range", "no-transform", "type", "stream",
 	"encoding", "already-compressed", "no-codec", "too-small", "too-large",
-	"disabled", "animated", "busy", "timeout", "not-smaller", "error", "budget",
+	"disabled", "animated", "busy", "timeout", "not-smaller", "error", "budget", "rule",
 }
 
 func (r Reason) String() string {
@@ -88,7 +92,7 @@ type ImageConfig struct {
 	MaxBytes    int64
 	MaxPixels   int64
 	Timeout     time.Duration // longest a request waits for a recoded image
-	CacheSize   int64         // bytes of recoded images kept, 0 for no cache
+	Metric      string        // dssim, ssim or ssimulacra2
 	// Background finishes, after the response went out, the images that did
 	// not fit in Timeout, so that the next request finds them in the cache.
 	Background        bool
@@ -103,10 +107,21 @@ type Config struct {
 	MaxConcurrent int           // concurrent CPU heavy transformations, 0 means the number of CPUs
 	TranscodeWait time.Duration // how long to wait for a free slot before passing the response through
 	MemoryBudget  int64         // bytes the pipeline may hold in buffers at the same time
-	Profile       string        // default profile: lossless, balanced, saver or extreme
-	Levels        codec.Levels  // text levels that replace the ones of the profile, when not zero
-	Text          TextConfig
-	Image         ImageConfig
+	Profile       string        // default profile
+	// Profiles are the profiles available, nil for the built-in ones.
+	Profiles map[string]*img.Profile
+	Levels   codec.Levels // text levels that replace the ones of the profile, when not zero
+	Text     TextConfig
+	Image    ImageConfig
+	// Rules is evaluated for every response, nil for none.
+	Rules *rules.RuleSet
+	// TTL bounds how long results stay in the cache.
+	TTL TTLConfig
+	// Cache keeps recoded images and fonts and slowly compressed text. Nil
+	// makes a memory cache of 256 MiB.
+	Cache *xcache.Cache
+	// Backend encodes the images, nil for the WebAssembly one.
+	Backend img.Backend
 }
 
 // DefaultConfig returns the defaults.
@@ -117,6 +132,7 @@ func DefaultConfig() Config {
 		TranscodeWait: 250 * time.Millisecond,
 		MemoryBudget:  256 << 20,
 		Profile:       img.ProfileBalanced,
+		TTL:           DefaultTTL(),
 		Text: TextConfig{
 			Minify:     textmin.DefaultConfig(),
 			Recompress: true,
@@ -132,7 +148,7 @@ func DefaultConfig() Config {
 			MaxBytes:          8 << 20,
 			MaxPixels:         16_000_000,
 			Timeout:           3 * time.Second,
-			CacheSize:         256 << 20,
+			Metric:            "dssim",
 			Background:        true,
 			BackgroundTimeout: 2 * time.Minute,
 			Warmup:            true,
@@ -142,13 +158,9 @@ func DefaultConfig() Config {
 
 // Pipeline is safe for concurrent use.
 type Pipeline struct {
-	cfg      Config
-	text     *codec.Text
-	profiles map[string]*img.Profile
-	// texts holds one codec per profile: for responses that change on every
-	// request, and for those that look cacheable and can afford a slow level.
-	texts  map[string][2]*codec.Text
-	min    *textmin.Minifier
+	cfg    Config
+	text   *codec.Text // only decodes, the levels do not matter
+	live   atomic.Pointer[live]
 	engine *img.Engine
 	cache  *xcache.Cache
 	flight singleflight.Group
@@ -156,6 +168,7 @@ type Pipeline struct {
 	warm   sync.WaitGroup
 	sem    chan struct{}
 	mem    *semaphore.Weighted
+	inst   atomic.Pointer[instruments]
 
 	buffers  sync.Pool
 	copyBufs sync.Pool
@@ -192,39 +205,43 @@ func New(cfg Config) *Pipeline {
 	if cfg.Image.BackgroundTimeout <= 0 {
 		cfg.Image.BackgroundTimeout = def.Image.BackgroundTimeout
 	}
-	if _, err := img.Lookup(cfg.Profile); err != nil {
+	if cfg.TTL == (TTLConfig{}) {
+		cfg.TTL = def.TTL
+	}
+	if cfg.Profile == "" {
 		cfg.Profile = def.Profile
 	}
 	if cfg.Text.Minify == (textmin.Config{}) {
 		cfg.Text.Minify = textmin.Config{HTML: textmin.Off, CSS: textmin.Off, JS: textmin.Off, SVG: textmin.Off, JSON: textmin.Off}
 	}
-	cfg.MinGain = min(max(cfg.MinGain, 0), 0.9)
+	if cfg.Backend == nil {
+		cfg.Backend = img.NewWASM()
+	}
+	if cfg.Cache == nil {
+		cfg.Cache = xcache.New(256 << 20)
+	}
+	metric, err := img.ParseMetric(cfg.Image.Metric)
+	if err != nil {
+		metric = img.MetricDSSIM
+	}
+	lv, err := newLive(&cfg)
+	if err != nil {
+		// an unknown default falls back, so that a bad name can not stop the proxy
+		cfg.Profile = def.Profile
+		lv, _ = newLive(&cfg)
+	}
 
 	p := &Pipeline{
-		cfg:      cfg,
-		profiles: img.Profiles(),
-		texts:    map[string][2]*codec.Text{},
-		min:      textmin.New(cfg.Text.Minify),
-		engine:   img.NewEngine(img.NewWASM()),
-		cache:    xcache.New(cfg.Image.CacheSize),
-		sem:      make(chan struct{}, cfg.MaxConcurrent),
-		mem:      semaphore.NewWeighted(cfg.MemoryBudget),
+		cfg:    cfg,
+		text:   codec.NewText(codec.Levels{Brotli: 6, Gzip: 6, Zstd: 3}),
+		engine: img.NewEngine(cfg.Backend),
+		cache:  cfg.Cache,
+		sem:    make(chan struct{}, cfg.MaxConcurrent),
+		mem:    semaphore.NewWeighted(cfg.MemoryBudget),
 	}
-	for name, prof := range p.profiles {
-		l := codec.Levels{Brotli: prof.Text.Brotli, Gzip: prof.Text.Gzip, Zstd: prof.Text.Zstd}
-		if cfg.Levels.Brotli > 0 {
-			l.Brotli = cfg.Levels.Brotli
-		}
-		if cfg.Levels.Gzip > 0 {
-			l.Gzip = cfg.Levels.Gzip
-		}
-		if cfg.Levels.Zstd > 0 {
-			l.Zstd = cfg.Levels.Zstd
-		}
-		static := l.WithBrotli(max(l.Brotli, prof.Text.BrotliStatic))
-		p.texts[name] = [2]*codec.Text{codec.NewText(l), codec.NewText(static)}
-	}
-	p.text = p.texts[cfg.Profile][0]
+	p.engine.Metric = metric
+	p.engine.OnEncode = p.observeEncode
+	p.live.Store(lv)
 	p.bg = newBackground(p)
 	if cfg.Image.Warmup {
 		p.warm.Add(1)
@@ -241,10 +258,59 @@ func New(cfg Config) *Pipeline {
 	return p
 }
 
+// Reload applies the parts of cfg that can change while running: the default
+// profile, the profiles, the text levels, what is minified, the rules and the
+// TTLs. Everything else needs a restart. When cfg is not valid nothing changes.
+func (p *Pipeline) Reload(cfg Config) error {
+	if cfg.TTL == (TTLConfig{}) {
+		cfg.TTL = DefaultTTL()
+	}
+	if cfg.Text.Minify == (textmin.Config{}) {
+		cfg.Text.Minify = textmin.Config{HTML: textmin.Off, CSS: textmin.Off, JS: textmin.Off, SVG: textmin.Off, JSON: textmin.Off}
+	}
+	lv, err := newLive(&cfg)
+	if err != nil {
+		return err
+	}
+	p.live.Store(lv)
+	return nil
+}
+
+// HostDecision evaluates the rules that can be decided from the host alone, at
+// the time a client asks for a tunnel.
+func (p *Pipeline) HostDecision(host string, src netip.Addr) rules.Decision {
+	rs := p.live.Load().rules
+	if rs == nil || rs.Len() == 0 {
+		return rules.Decision{}
+	}
+	return rs.EvaluateHost(host, src, netip.Addr{})
+}
+
+// WaitBackground waits until the background jobs are done or ctx ends, and
+// reports whether they are done.
+func (p *Pipeline) WaitBackground(ctx context.Context) bool {
+	t := time.NewTicker(50 * time.Millisecond)
+	defer t.Stop()
+	for !p.bg.idle() {
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
 // Close stops the background work.
 func (p *Pipeline) Close() {
 	p.bg.close()
-	p.warm.Wait()
+	// the warm-up can not be interrupted, but it must not hold a shutdown
+	done := make(chan struct{})
+	go func() { p.warm.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 // Outcome describes what happened to one response.
@@ -272,8 +338,10 @@ func (p *Pipeline) Stats() [NumReasons]uint64 {
 // Handle writes resp to w, recompressing it when that is safe and worthwhile.
 // The hop-by-hop headers must already be gone from resp.Header.
 func (p *Pipeline) Handle(w http.ResponseWriter, req *http.Request, resp *http.Response) Outcome {
+	start := time.Now()
 	out := p.handle(w, req, resp)
 	p.reasons[out.Reason].Add(1)
+	p.record(resp, out, time.Since(start))
 	return out
 }
 
@@ -287,11 +355,32 @@ const (
 
 func (p *Pipeline) handle(w http.ResponseWriter, req *http.Request, resp *http.Response) Outcome {
 	k, mt, reason := p.classify(req, resp)
+	if k == kindNone {
+		return p.passthrough(w, resp, reason)
+	}
+	lv := p.live.Load()
+	var dec rules.Decision
+	if lv.rules != nil && lv.rules.Len() > 0 {
+		dec = lv.rules.Evaluate(rulesContext(req, resp, mt))
+		if dec.Action != rules.ActionNone {
+			return p.passthrough(w, resp, PassRule)
+		}
+	}
+	fl, err := lv.newFlow(req, dec)
+	if err != nil {
+		return p.passthrough(w, resp, PassError)
+	}
 	switch k {
 	case kindText:
-		return p.handleText(w, req, resp, mt)
+		if !fl.opts.text {
+			return p.passthrough(w, resp, PassDisabled)
+		}
+		return p.handleText(w, req, resp, mt, fl)
 	case kindImage:
-		return p.handleImage(w, req, resp, mt)
+		if !fl.opts.images {
+			return p.passthrough(w, resp, PassDisabled)
+		}
+		return p.handleImage(w, req, resp, mt, fl)
 	}
 	return p.passthrough(w, resp, reason)
 }

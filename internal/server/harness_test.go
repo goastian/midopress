@@ -141,9 +141,10 @@ type harness struct {
 	deadHosts sync.Map
 	routes    sync.Map // "host:port" -> address of a backend
 
-	realDial bool
-	resolver upstream.Resolver
-	logger   *slog.Logger
+	serverOpts []server.Option
+	realDial   bool
+	resolver   upstream.Resolver
+	logger     *slog.Logger
 
 	cancel context.CancelFunc
 	done   chan error
@@ -153,6 +154,10 @@ type harnessOption func(*harness)
 
 func withConfig(fn func(*config.Config)) harnessOption {
 	return func(h *harness) { fn(h.cfg) }
+}
+
+func withServerOption(o server.Option) harnessOption {
+	return func(h *harness) { h.serverOpts = append(h.serverOpts, o) }
 }
 
 // withoutMITM leaves the CA out of the configuration.
@@ -221,7 +226,7 @@ func (h *harness) start(dir string) {
 	if log == nil && os.Getenv("MIDOPRESS_TEST_LOG") != "" {
 		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}
-	srv, err := server.New(h.cfg, log, server.WithUpstream(func(o *upstream.Options) {
+	srv, err := server.New(h.cfg, log, append([]server.Option{server.WithUpstream(func(o *upstream.Options) {
 		o.RootCAs = h.originPool
 		if !h.realDial {
 			o.Dial = h.dial
@@ -229,7 +234,7 @@ func (h *harness) start(dir string) {
 		if h.resolver != nil {
 			o.Resolver = h.resolver
 		}
-	}))
+	})}, h.serverOpts...)...)
 	require.NoError(t, err)
 	require.NoError(t, srv.Listen())
 	h.srv = srv

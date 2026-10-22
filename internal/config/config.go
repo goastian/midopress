@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/rules"
 )
 
 // Config is the whole configuration.
@@ -23,7 +26,37 @@ type Config struct {
 	Upstream Upstream `yaml:"upstream"`
 	Server   Server   `yaml:"server"`
 	Pipeline Pipeline `yaml:"pipeline"`
-	Log      Log      `yaml:"log"`
+	Cache    Cache    `yaml:"cache"`
+	// Profiles changes the built-in profiles or defines new ones.
+	Profiles map[string]img.ProfileOverride `yaml:"profiles"`
+	// Rules decide what happens to each request, in order, see internal/rules.
+	Rules   []rules.Rule `yaml:"rules"`
+	Metrics Metrics      `yaml:"metrics"`
+	Log     Log          `yaml:"log"`
+}
+
+// Cache configures the cache of recoded images, fonts and slowly compressed text.
+type Cache struct {
+	// Memory is the size of the memory tier, 0 for none.
+	Memory ByteSize `yaml:"memory"`
+	// Dir is the directory of the disk tier, empty for no disk tier.
+	Dir string `yaml:"dir"`
+	// MaxSize is the size the disk tier is kept under.
+	MaxSize ByteSize `yaml:"max_size"`
+	// MinTTL, MaxTTL and DefaultTTL bound how long a result is kept; the origin's
+	// Cache-Control and Expires choose within them.
+	MinTTL     time.Duration `yaml:"min_ttl"`
+	MaxTTL     time.Duration `yaml:"max_ttl"`
+	DefaultTTL time.Duration `yaml:"default_ttl"`
+}
+
+// Metrics configures the Prometheus endpoint.
+type Metrics struct {
+	Prometheus bool `yaml:"prometheus"`
+	// Addr serves /metrics on a listener of its own, for example
+	// "127.0.0.1:9100". Empty serves it on the proxy port, at /metrics, to the
+	// clients the proxy accepts.
+	Addr string `yaml:"addr"`
 }
 
 // Listen configures the address the proxy accepts connections on.
@@ -149,9 +182,12 @@ type Image struct {
 	MaxBytes    ByteSize      `yaml:"max_bytes"`
 	MaxPixels   int64         `yaml:"max_pixels"`
 	Timeout     time.Duration `yaml:"timeout"`
-	// CacheSize is the memory used to keep recoded images and fonts, so that a
-	// popular file is only recoded once. 0 disables the cache.
-	CacheSize ByteSize `yaml:"cache_size"`
+	// Metric measures how close a recoded image is to the original: dssim
+	// (default), ssim or ssimulacra2.
+	Metric string `yaml:"metric"`
+	// Backend is the image codec backend: wasm (default) or vips, which needs a
+	// binary built with the vips tag.
+	Backend string `yaml:"backend"`
 	// Background lets slow formats, which do not fit in timeout, be produced
 	// after the response was sent, for the next request to find in the cache.
 	Background bool `yaml:"background"`
@@ -219,13 +255,24 @@ func Default() *Config {
 				MaxBytes:          8 << 20,
 				MaxPixels:         16_000_000,
 				Timeout:           3 * time.Second,
-				CacheSize:         256 << 20,
+				Metric:            "dssim",
+				Backend:           "wasm",
 				Background:        true,
 				BackgroundTimeout: 2 * time.Minute,
 				Warmup:            true,
 			},
 		},
-		Log: Log{Level: "info", Format: "text"},
+		Cache: Cache{
+			Memory:     256 << 20,
+			MaxSize:    5 << 30,
+			MinTTL:     time.Minute,
+			MaxTTL:     7 * 24 * time.Hour,
+			DefaultTTL: time.Hour,
+		},
+		Profiles: map[string]img.ProfileOverride{},
+		Rules:    []rules.Rule{},
+		Metrics:  Metrics{Prometheus: true},
+		Log:      Log{Level: "info", Format: "text"},
 	}
 }
 
@@ -330,11 +377,6 @@ func (c *Config) Validate() error {
 	if p.MemoryBudget < 1<<20 {
 		add("pipeline.memory_budget must be at least 1MiB")
 	}
-	switch p.Profile {
-	case "lossless", "balanced", "saver", "extreme":
-	default:
-		add("pipeline.profile %q must be lossless, balanced, saver or extreme", p.Profile)
-	}
 	if p.Text.Brotli < 0 || p.Text.Brotli > 11 {
 		add("pipeline.text.brotli must be between 0 and 11")
 	}
@@ -351,8 +393,45 @@ func (c *Config) Validate() error {
 			add("pipeline.text.minify.%s %q must be off, safe or aggressive", name, mode)
 		}
 	}
-	if p.Image.CacheSize < 0 {
-		add("pipeline.image.cache_size must not be negative")
+	if _, err := img.ParseMetric(p.Image.Metric); err != nil {
+		add("pipeline.image.metric: %v", err)
+	}
+	if p.Image.Backend != "wasm" && p.Image.Backend != "vips" {
+		add("pipeline.image.backend %q must be wasm or vips", p.Image.Backend)
+	}
+	k := c.Cache
+	if k.Memory < 0 || k.MaxSize < 0 {
+		add("cache sizes must not be negative")
+	}
+	if k.Dir != "" && k.MaxSize < 1<<20 {
+		add("cache.max_size must be at least 1MiB when cache.dir is set")
+	}
+	if k.MinTTL <= 0 || k.MaxTTL < k.MinTTL || k.DefaultTTL < k.MinTTL || k.DefaultTTL > k.MaxTTL {
+		add("cache TTLs must satisfy 0 < min_ttl <= default_ttl <= max_ttl")
+	}
+	profiles, err := img.BuildProfiles(c.Profiles)
+	if err != nil {
+		add("profiles: %v", err)
+	}
+	if _, ok := profiles[p.Profile]; profiles != nil && !ok {
+		add("pipeline.profile %q is not a built-in or defined profile", p.Profile)
+	}
+	if profiles != nil {
+		names := make([]string, 0, len(profiles))
+		for n := range profiles {
+			names = append(names, n)
+		}
+		if _, err := rules.Compile(c.Rules, rules.WithProfiles(names...)); err != nil {
+			add("rules: %v", err)
+		}
+	}
+	for i, r := range c.Rules {
+		if err := ValidateSet(r.Set); err != nil {
+			add("rules[%d].set: %v", i, err)
+		}
+	}
+	if _, err := rules.NewHostMatcher(c.MITM.Passthrough); err != nil {
+		add("mitm.passthrough: %v", err)
 	}
 	if p.Text.BufferMax < 1024 {
 		add("pipeline.text.buffer_max must be at least 1KiB")

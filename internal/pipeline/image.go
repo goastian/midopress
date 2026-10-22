@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/httpx"
@@ -36,38 +37,19 @@ func (p *Pipeline) imageEnabled(kind img.Format) bool {
 	return false
 }
 
-// profileRank orders the profiles from the most to the least careful.
-func profileRank(name string) int {
-	switch name {
-	case img.ProfileLossless:
-		return 0
-	case img.ProfileBalanced:
-		return 1
-	case img.ProfileSaver:
-		return 2
-	}
-	return 3
-}
-
-// profileFor picks the profile of a request: the one it asks for with
-// X-MidoPress-Profile, else the configured one, raised to at least saver when
-// the client sets Save-Data. It is read per request and never stored.
-func (p *Pipeline) profileFor(h http.Header) *img.Profile {
-	if v := strings.ToLower(strings.TrimSpace(h.Get("X-MidoPress-Profile"))); v != "" {
-		if prof, ok := p.profiles[v]; ok {
-			return prof
-		}
-	}
-	prof := p.profiles[p.cfg.Profile]
-	if strings.EqualFold(strings.TrimSpace(h.Get("Save-Data")), "on") && profileRank(prof.Name) < profileRank(img.ProfileSaver) {
-		return p.profiles[img.ProfileSaver]
-	}
-	return prof
+// expiry is when a result computed for a response with these headers should
+// leave the cache.
+func (p *Pipeline) expiry(h http.Header) time.Time {
+	now := time.Now()
+	return now.Add(ttlFor(h, now, p.live.Load().ttl))
 }
 
 // quality returns the fixed quality for the request, 0 to search for it. The
 // header is read per request, so concurrent requests can not affect each other.
-func (p *Pipeline) quality(h http.Header) int {
+func (p *Pipeline) quality(h http.Header, fl *flow) int {
+	if fl.opts.quality > 0 {
+		return fl.opts.quality
+	}
 	v := h.Get("X-MidoPress-Quality")
 	if v == "" {
 		v = h.Get("X-Compy-Quality")
@@ -98,7 +80,7 @@ func hintsFrom(h http.Header) img.Hints {
 		return n
 	}
 	if v := h.Get("X-MidoPress-Viewport"); v != "" {
-		w, d, _ := strings.Cut(v, "x")
+		w, d, _ := strings.Cut(strings.NewReplacer(",", "x", ";", "x").Replace(v), "x")
 		hints.ViewportWidth, hints.DPR = width(w), dpr(d)
 	}
 	if hints.ViewportWidth == 0 {
@@ -127,7 +109,7 @@ func imageKey(plain []byte, prof *img.Profile, caps img.Caps, hints img.Hints, f
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string) Outcome {
+func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string, fl *flow) Outcome {
 	ic := &p.cfg.Image
 	declared := img.JPEG
 	switch mt {
@@ -203,13 +185,13 @@ func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *h
 	}
 	defer p.mem.Release(pixelWeight)
 
-	prof := p.profileFor(req.Header)
+	prof := fl.prof
 	caps := img.CapsFromAccept(req.Header.Get("Accept"))
 	var hints img.Hints
 	if prof.ResizeToViewport {
 		hints = hintsFrom(req.Header)
 	}
-	fixed := p.quality(req.Header)
+	fixed := p.quality(req.Header, fl)
 	key := imageKey(plain, prof, caps, hints, fixed)
 	input := img.Input{Raw: plain, Format: kind, Caps: caps, Profile: prof, Hints: hints, Fixed: fixed, Budget: ic.Timeout}
 
@@ -220,20 +202,24 @@ func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *h
 		case errors.Is(err, errBusy):
 			return p.writeBuffered(w, resp, wire, in.n, PassBusy)
 		case errors.Is(err, img.ErrBudget):
-			p.bg.submit(key, withoutBudget(input))
+			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header))
 			return p.writeBuffered(w, resp, wire, in.n, PassBudget)
 		case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):
-			p.bg.submit(key, withoutBudget(input))
+			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header))
 			return p.writeBuffered(w, resp, wire, in.n, PassTimeout)
 		case errors.Is(err, img.ErrUnsupported):
+			p.cache.Add(key, &xcache.Entry{Keep: true, Expires: p.expiry(resp.Header)})
 			return p.writeBuffered(w, resp, wire, in.n, PassType)
 		case err != nil:
 			return p.writeBuffered(w, resp, wire, in.n, PassError)
 		}
-		entry = entryFor(res, len(plain), p.cfg.MinGain)
-		p.cache.Add(key, entry)
+		entry = entryFor(res, len(plain), p.cfg.MinGain, p.expiry(resp.Header))
+		if !res.Limited || !entry.Keep {
+			// "the original is better" is not worth remembering when the time ran out
+			p.cache.Add(key, entry)
+		}
 		if res.Limited {
-			p.bg.submit(key, withoutBudget(input))
+			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header))
 		}
 	}
 	if entry.Keep || !p.worthIt(len(entry.Data), len(wire)) {
@@ -314,8 +300,15 @@ func (p *Pipeline) runCPU(in img.Input) (res *img.Result, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.Image.Timeout)
 	defer cancel()
 	res, err = p.engine.Optimize(ctx, in)
-	if err == nil && ctx.Err() != nil && res == nil {
-		err = errTimeout
+	if err == nil && ctx.Err() != nil {
+		if res == nil {
+			return nil, errTimeout
+		}
+		// the time ran out in the middle of the search: what was found is the
+		// best of what fitted, and a caller with more time can do better
+		cp := *res
+		cp.Limited = true
+		res = &cp
 	}
 	return res, err
 }

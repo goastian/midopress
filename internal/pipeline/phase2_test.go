@@ -13,22 +13,30 @@ import (
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/textmin"
+	"github.com/goastian/midopress/internal/xcache"
 )
 
 func TestProfileSelection(t *testing.T) {
 	p := newPipeline()
+	lv := p.live.Load()
 	h := func(kv ...string) http.Header { return newReq(kv...).Header }
+	pick := func(c Client, hd http.Header, rule string) string { return lv.pick(c, hd, rule).Name }
 
-	assert.Equal(t, img.ProfileBalanced, p.profileFor(h()).Name)
-	assert.Equal(t, img.ProfileExtreme, p.profileFor(h("X-MidoPress-Profile", "Extreme")).Name)
-	assert.Equal(t, img.ProfileBalanced, p.profileFor(h("X-MidoPress-Profile", "turbo")).Name, "an unknown name is ignored")
-	assert.Equal(t, img.ProfileSaver, p.profileFor(h("Save-Data", "on")).Name, "Save-Data raises balanced to saver")
-	assert.Equal(t, img.ProfileLossless, p.profileFor(h("Save-Data", "on", "X-MidoPress-Profile", "lossless")).Name, "an explicit profile wins")
+	assert.Equal(t, img.ProfileBalanced, pick(Client{}, h(), ""))
+	assert.Equal(t, img.ProfileExtreme, pick(Client{}, h("X-MidoPress-Profile", "Extreme"), ""))
+	assert.Equal(t, img.ProfileBalanced, pick(Client{}, h("X-MidoPress-Profile", "turbo"), ""), "an unknown name is ignored")
+	assert.Equal(t, img.ProfileSaver, pick(Client{}, h("Save-Data", "on"), ""), "Save-Data raises balanced to saver")
+
+	// device token > header > rule > Save-Data > default
+	assert.Equal(t, img.ProfileLossless, pick(Client{Profile: "lossless"}, h("X-MidoPress-Profile", "extreme"), "saver"))
+	assert.Equal(t, img.ProfileExtreme, pick(Client{}, h("X-MidoPress-Profile", "extreme"), "lossless"))
+	assert.Equal(t, img.ProfileLossless, pick(Client{}, h("Save-Data", "on"), "lossless"), "a rule wins over Save-Data")
+	assert.Equal(t, img.ProfileBalanced, pick(Client{Profile: "gone"}, h(), ""), "a device profile that does not exist is ignored")
 
 	ext := newPipeline(func(c *Config) { c.Profile = img.ProfileExtreme })
-	assert.Equal(t, img.ProfileExtreme, ext.profileFor(h("Save-Data", "on")).Name, "never lowered")
+	assert.Equal(t, img.ProfileExtreme, ext.live.Load().pick(Client{}, h("Save-Data", "on"), "").Name, "never lowered")
 	unknown := newPipeline(func(c *Config) { c.Profile = "nope" })
-	assert.Equal(t, img.ProfileBalanced, unknown.cfg.Profile)
+	assert.Equal(t, img.ProfileBalanced, unknown.live.Load().profile)
 }
 
 func TestHintsFrom(t *testing.T) {
@@ -79,7 +87,7 @@ func TestRepeatedImageComesFromTheCache(t *testing.T) {
 }
 
 func TestCacheCanBeDisabled(t *testing.T) {
-	p := newPipeline(func(c *Config) { c.Image.CacheSize = 0 })
+	p := newPipeline(func(c *Config) { c.Cache = xcache.New(0) })
 	jpg := jpegBytes(t, 200, 150, 95)
 	_, out := run(p, newReq(), newResp("image/jpeg", jpg))
 	require.Equal(t, Transformed, out.Reason)
@@ -121,7 +129,7 @@ func TestBudgetFallsBackAndFinishesInTheBackground(t *testing.T) {
 	assert.Equal(t, PassTimeout, out.Reason, "the client is not kept waiting")
 	assert.Equal(t, jpg, rec.Body.Bytes(), "and gets the original")
 
-	key := imageKey(jpg, p.profiles[img.ProfileBalanced], img.CapsFromAccept(acc), img.Hints{}, 0)
+	key := imageKey(jpg, p.live.Load().profiles[img.ProfileBalanced], img.CapsFromAccept(acc), img.Hints{}, 0)
 	require.Eventually(t, func() bool { _, ok := p.cache.Get(key); return ok }, 2*time.Minute, 100*time.Millisecond)
 
 	rec, out = run(p, newReq("Accept", acc), newResp("image/jpeg", jpg))
@@ -133,7 +141,7 @@ func TestBudgetFallsBackAndFinishesInTheBackground(t *testing.T) {
 func TestBackgroundOff(t *testing.T) {
 	p := newPipeline(func(c *Config) { c.Image.Background = false })
 	assert.False(t, p.bg.enabled())
-	p.bg.submit("k", img.Input{})
+	p.bg.submit("k", img.Input{}, time.Time{})
 	assert.Empty(t, p.bg.inflight)
 }
 

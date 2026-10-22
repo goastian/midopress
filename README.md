@@ -172,7 +172,62 @@ result from the cache. And if the shared libraries of libwebp, libavif and libjx
 are installed, the codecs find and use them without cgo, which is about ten times
 faster. The Docker image can include them with `--build-arg NATIVE_CODECS=1`; it
 is off by default because one stress run of that path (about ten runs in total)
-crashed inside the C library bindings.
+crashed inside the C library bindings. The libjxl library also lets the proxy
+recompress JPEG files into JPEG XL without losing a bit (15.9% smaller on the test
+corpus), which nothing else here does.
+
+### libvips backend
+
+A binary built with `-tags vips` (it needs cgo and libvips with its development
+files) can encode and decode with libvips, which is 2 to 12 times faster than the
+WebAssembly codecs; choose it with `pipeline.image.backend: vips`.
+`go build -tags vips ./cmd/midopress`. The default build has no C dependency and
+does not include it.
+
+### Rules
+
+Rules say what happens to a request or a response, in order, with the filter
+language of mitmproxy (`~d` domain, `~u` URL, `~t` content type, `~c` status,
+`~m` method, `~h` headers, `~b` body, `~src` and `~dst` addresses, with `&`, `|`,
+`!` and parentheses):
+
+```yaml
+rules:
+  - match: '~d (bank|banco|paypal|health)\.'
+    action: passthrough_tls          # do not decrypt it at all
+  - match: '~u \.(mp4|webm|m3u8|ts)$ | ~t video/'
+    action: passthrough              # send it as it is
+  - match: '~d cdn\.example\.com & ~t image/'
+    profile: extreme
+  - match: '~u /app\.js$'
+    set: {minify_js: true}
+```
+
+`profile` and `set` add up as the rules go by; the first `action` ends the
+evaluation. An invalid rule is reported with its position, and the proxy does not
+start with one. The profile of a request comes from, in this order, the profile of
+the device token (`midopress device add -profile`), the `X-MidoPress-Profile`
+header, a rule, `Save-Data: on` and the default. You can also change the built-in
+profiles or define new ones under `profiles:`; see the example configuration.
+
+Rules, profiles, `mitm.passthrough`, the default profile, minification and the log
+level are applied without a restart, when the configuration file changes or on
+`SIGHUP`. A new configuration that does not validate changes nothing.
+
+### Cache
+
+Recoded images, fonts and slowly compressed text are kept by the content of the
+original, in memory and, if `cache.dir` is set, on disk, where they survive
+restarts. The origin's `Cache-Control` and `Expires` choose how long, between
+`cache.min_ttl` and `cache.max_ttl`, and the disk is kept under `cache.max_size`.
+
+### Metrics
+
+`/metrics` has the Prometheus text format: requests and bytes, what the pipeline did
+with each response and why, the time of each step, cache hits and hit rate, the
+background queue, and the Go and process collectors. It is served on the proxy
+port to the clients the proxy accepts, or on its own listener with
+`metrics.addr`.
 
 ### Authentication
 
@@ -312,24 +367,28 @@ go test -run '^$' -bench . -benchmem ./internal/server/
 ## Benchmark
 
 `midopress bench DIR` recodes every image in a directory for each client and
-profile, measures the similarity of every result with its own metric, and
-decodes the output again separately to check it. `go run ./tools/fetch-images`
-downloads the corpus used here (62 images: 25 JPEG photographs as web servers
-deliver them, 29 PNG photographs, 6 graphics and 2 animated GIFs; the images are
-not part of the repository). Balanced profile, WebAssembly codecs, one machine
-with 20 threads:
+profile, then decodes every result again and measures it with the dssim
+implementation, apart from the engine. `go run ./tools/fetch-images` downloads the
+corpus used here (62 images: 25 JPEG photographs as web servers deliver them, 29
+PNG photographs, 6 graphics and 2 animated GIFs; the images are not part of the
+repository). Balanced profile (dssim at most 0.002), WebAssembly codecs:
 
-| client accepts | photos (JPEG) | photos (PNG) | graphics | whole corpus | lowest similarity |
-|---|---:|---:|---:|---:|---:|
-| JPEG only | 28.8% | 82.4% | 0.9% | 59.3% | 0.9750 |
-| WebP | 27.0% | 82.8% | 64.1% | 61.0% | 0.9751 |
-| JPEG XL, AVIF, WebP | 36.4% | 85.9% | 54.0% | 65.6% | 0.9751 |
+| client accepts | whole corpus | web JPEG | PNG photos | results above 0.002 |
+|---|---:|---:|---:|---:|
+| JPEG only | 65.2% | 38.5% | 87.1% | 0 of 47 |
+| WebP | 69.3% | 39.5% | 89.9% | 0 of 53 |
+| JPEG XL, AVIF, WebP | 71.9% | 45.1% | 91.4% | 0 of 53 |
 
-Saver gets 67% to 74% over the whole corpus and extreme 80% to 86%; see
+Saver saves 74% to 81% and extreme 83% to 90% over the whole corpus, see
 [CHANGELOG](CHANGELOG.md). Recoding a JPEG that is already well compressed saves
-much less than recoding a PNG photograph, which is why the first column is lower:
-the honest number for web JPEGs at the balanced profile is 27% to 36%. Two JPEG
+less than recoding a PNG photograph, which is why the web JPEG column is lower:
+the honest number for web JPEGs at the balanced profile is 38% to 45%. Two JPEG
 photographs carry a wide-gamut colour profile and are left as they are.
+
+With the cache, going over the same images again (`midopress bench -passes 2`)
+answers every request from it: a hit rate of 100% and a 95th percentile of 2.3 ms.
+The first pass saves 52% within the 3 seconds a request waits, and 71% once the
+background work is done.
 
 ## Credits
 

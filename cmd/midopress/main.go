@@ -182,14 +182,16 @@ func (f *serveFlags) load(environ []string) (*config.Config, error) {
 	return cfg, nil
 }
 
-func newLogger(cfg config.Log, w io.Writer) *slog.Logger {
-	var level slog.Level
-	_ = level.UnmarshalText([]byte(cfg.Level))
+func newLogger(cfg config.Log, w io.Writer) (*slog.Logger, *slog.LevelVar) {
+	level := new(slog.LevelVar)
+	var l slog.Level
+	_ = l.UnmarshalText([]byte(cfg.Level))
+	level.Set(l)
 	opts := &slog.HandlerOptions{Level: level}
 	if cfg.Format == "json" {
-		return slog.New(slog.NewJSONHandler(w, opts))
+		return slog.New(slog.NewJSONHandler(w, opts)), level
 	}
-	return slog.New(slog.NewTextHandler(w, opts))
+	return slog.New(slog.NewTextHandler(w, opts)), level
 }
 
 func cmdServe(args []string, stdout, stderr io.Writer, environ []string) int {
@@ -214,9 +216,13 @@ func cmdServe(args []string, stdout, stderr io.Writer, environ []string) int {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	log := newLogger(cfg.Log, stderr)
+	log, level := newLogger(cfg.Log, stderr)
 
-	srv, err := server.New(cfg, log)
+	srv, err := server.New(cfg, log,
+		server.WithVersion(buildVersion()),
+		server.WithLogLevel(level),
+		server.WithConfigLoader(func() (*config.Config, error) { return f.load(environ) }),
+	)
 	if err != nil {
 		log.Error("cannot start", "err", err)
 		return 1
@@ -236,6 +242,9 @@ func cmdServe(args []string, stdout, stderr io.Writer, environ []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	watchReload(ctx, srv, log)
+	if f.configPath != "" {
+		watchConfigFile(ctx, f.configPath, srv.Reload, log)
+	}
 
 	log.Info("midopress listening",
 		"version", buildVersion(),

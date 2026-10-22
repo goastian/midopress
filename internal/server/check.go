@@ -4,9 +4,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/goastian/midopress/internal/auth"
 	"github.com/goastian/midopress/internal/config"
+	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/mitm"
 )
 
@@ -31,6 +33,9 @@ func Check(cfg *config.Config) error {
 		AutoTTL:     cfg.MITM.AutoPassthroughTTL,
 	}); err != nil {
 		errs = append(errs, fmt.Errorf("mitm.passthrough: %w", err))
+	}
+	if be := cfg.Pipeline.Image.Backend; !slices.Contains(img.Backends(), be) {
+		errs = append(errs, fmt.Errorf("pipeline.image.backend: %q is not in this build, which has %v", be, img.Backends()))
 	}
 	if cfg.Auth.Mode == "token" && cfg.Auth.DevicesFile != "" {
 		a, err := auth.New(auth.Options{Mode: auth.ModeToken, DevicesFile: cfg.Auth.DevicesFile, ReloadInterval: -1})

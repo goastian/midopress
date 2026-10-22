@@ -31,7 +31,47 @@ closed, and the status of every one is listed there.
   `log.urls` is set.
 - The text of the stats page and the exit message changed.
 
-### Added (phase 2: modern codecs)
+### Added (perceptual quality, profiles and cache)
+
+- **DSSIM is the measure** that decides when a lossy image is close enough:
+  `balanced` accepts a distance of 0.002, `saver` 0.006 and `extreme` 0.015, and
+  every result is decoded again and measured before it is used. SSIM and
+  SSIMULACRA2 are available with `pipeline.image.metric`. The first guess of the
+  search, the iteration limit, the analysis size, the formats that are skipped
+  (AVIF under 10 KB, those that never reach the target) and the measured cost of
+  each format are all there to keep the number of encodes low.
+- **Rules**: `rules:` with the mitmproxy filter language and the actions
+  `passthrough`, `passthrough_tls`, `profile` and `set`; invalid rules are
+  reported with their position and stop the proxy from starting.
+- **Profiles** can be changed and defined in `profiles:`; the profile of a
+  request comes from the device token, the `X-MidoPress-Profile` header, a rule,
+  `Save-Data` or the default.
+- **Cache with a disk tier** (`cache.dir`), TTLs derived from `Cache-Control` and
+  `Expires`, size cleanup, and hit rate metrics. What the background jobs finish
+  is stored in it.
+- **Hot reload** of rules, profiles, the default profile, minification, TTLs,
+  `mitm.passthrough` and the log level, on `SIGHUP` and when the configuration
+  file changes.
+- **Prometheus `/metrics`** on the proxy port or on `metrics.addr`.
+- `midopress bench -passes N` runs the whole pipeline with its cache; `-metric`,
+  `-backend` and the measured dssim of every result in `-verify`.
+
+Fixed in this phase:
+
+- The WebP decoder was measured with the wrong colour range and chroma
+  upsampling, so every WebP looked worse than it was and never reached a strict
+  target. It now matches `dwebp` byte for byte.
+- A result found after the time ran out was remembered as "the original is
+  better" and the background work never replaced it.
+
+Behavior changes of this phase:
+
+- `balanced` is stricter: a dssim of 0.002 instead of an SSIM of 0.975. Images
+  that were at 0.975 but not at 0.002 are now sent at a higher quality.
+- `pipeline.image.cache_size` is gone: use `cache.memory`.
+- Intercepted HTTPS connections get the profile of the device that opened them.
+
+### Added (: modern codecs)
 
 - **Images are recoded against a measured quality.** `internal/img` picks the
   best format the browser accepts (JPEG XL, AVIF, WebP, jpegli JPEG, optimized
@@ -73,8 +113,9 @@ Behavior changes of this phase:
 - Animated GIFs are no longer left alone for clients that accept WebP.
 - Images get `Vary: Accept, Save-Data`.
 
-Not done in this phase: lossless JPEG to JPEG XL, which needs libjxl bindings,
-and the optional libvips backend.
+- **Reversible JPEG to JPEG XL** recompression through libjxl (found at run
+  time, no cgo), verified by rebuilding the JPEG before it is used.
+- **Optional libvips backend** (`-tags vips`, `pipeline.image.backend: vips`).
 
 ### Added
 

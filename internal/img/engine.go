@@ -11,7 +11,6 @@ import (
 
 	"github.com/goastian/midopress/internal/imgmeta"
 	"github.com/goastian/midopress/internal/pngopt"
-	"github.com/goastian/midopress/internal/quality"
 )
 
 // Input is one image to optimize and what is known about who will see it.
@@ -24,6 +23,8 @@ type Input struct {
 	// Fixed forces the quality of the encoder, 1 to 100, and skips the search.
 	// Zero lets the engine find the lowest quality that meets the profile.
 	Fixed int
+	// Metric overrides the engine's metric for this image when not empty.
+	Metric Metric
 	// Budget is the CPU time the job may use. Zero means no limit. A format
 	// that is estimated not to fit is skipped, so that a big image falls back
 	// to a faster format instead of timing out.
@@ -38,9 +39,13 @@ type Input struct {
 type Result struct {
 	Data     []byte
 	Format   Format
-	Lossless bool    // the pixels are exactly those of the source
-	SSIM     float64 // similarity to the source, measured; 1 when lossless
-	Attempts int     // encodes spent
+	Lossless bool // the pixels are exactly those of the source
+	// Measure is the distance of the result to the source in the units of
+	// Metric (dssim distance, ssim similarity or ssimulacra2 score). It is only
+	// meaningful when the result is not Lossless.
+	Measure  float64
+	Metric   Metric
+	Attempts int // encodes spent
 	Resized  bool
 	// Limited says that a better format was skipped because the time budget
 	// was too short for it. A caller with more time can try again.
@@ -54,6 +59,18 @@ type Engine struct {
 	be Backend
 	jr JPEGRecompressor
 
+	// Metric measures how close a lossy result is to its source. The default
+	// is dssim.
+	Metric Metric
+
+	costs       costModel
+	unreachable unreachable
+
+	// OnEncode, when set, is called after every encode of the search with the
+	// format, the pixels and the time the attempt took (encode, decode and
+	// measure).
+	OnEncode func(f Format, pixels int, d time.Duration)
+
 	// Trace, when set, receives one line for every encode the search makes.
 	Trace func(format string, args ...any)
 }
@@ -66,7 +83,7 @@ func (e *Engine) tracef(format string, args ...any) {
 
 // NewEngine returns an engine that encodes with be.
 func NewEngine(be Backend) *Engine {
-	e := &Engine{be: be}
+	e := &Engine{be: be, Metric: MetricDSSIM}
 	if jr, ok := be.(JPEGRecompressor); ok {
 		e.jr = jr
 	}
@@ -124,6 +141,9 @@ func (e *Engine) attemptCost(f Format, pixels int) time.Duration {
 	default:
 		perMP = 1
 	}
+	if learned, ok := e.costs.estimate(f); ok {
+		perMP = learned
+	}
 	return time.Duration(perMP * mp * float64(time.Second))
 }
 
@@ -143,14 +163,16 @@ func (e *Engine) optimizeJPEG(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return nil, ErrUnsupported
 	}
-	base := &Result{Data: stripped, Format: JPEG, Lossless: true, SSIM: 1, Note: "metadata stripped"}
+	base := &Result{Data: stripped, Format: JPEG, Lossless: true, Note: "metadata stripped"}
 
-	if in.Profile.Lossless || keepICC {
-		if in.Caps.JXL && e.jr != nil {
-			if jxl, err := e.jr.RecompressJPEG(in.Raw); err == nil && len(jxl) < len(base.Data) {
-				return &Result{Data: jxl, Format: JXL, Lossless: true, SSIM: 1, Note: "jpeg to jxl, reversible"}, nil
-			}
+	// Reversible recompression into JPEG XL loses nothing and is about a fifth
+	// smaller, so it competes with the lossy results in every profile.
+	if in.Caps.JXL && e.jr != nil && (in.Budget <= 0 || in.Budget >= 50*time.Millisecond) {
+		if jxl, err := e.jr.RecompressJPEG(in.Raw); err == nil && len(jxl) < len(base.Data) {
+			base = &Result{Data: jxl, Format: JXL, Lossless: true, Note: "jpeg to jxl, reversible"}
 		}
+	}
+	if in.Profile.Lossless || keepICC {
 		return base, nil
 	}
 
@@ -170,26 +192,29 @@ func (e *Engine) optimizeJPEG(ctx context.Context, in Input) (*Result, error) {
 
 // ---- lossy search ----
 
-// Quality that usually lands near a similarity of 0.975 on photographs. The
-// search starts here and corrects, so being off costs an extra encode, not
-// quality.
-var balancedQuality = map[Format]int{JPEG: 88, WebP: 82, AVIF: 66, JXL: 85}
+// Quality at which each format usually lands near the balanced target on
+// photographs. The search starts here and corrects, so being off costs an extra
+// encode, not quality.
+var balancedQuality = map[Format]int{JPEG: 80, WebP: 92, AVIF: 66, JXL: 76}
 
-// How much the similarity moves per quality point near the target, per format.
-var qualitySlope = map[Format]float64{JPEG: 0.0016, WebP: 0.0018, AVIF: 0.0020, JXL: 0.0016}
+// The same for the metrics that are looser than dssim 0.002.
+var looseQuality = map[Format]int{JPEG: 88, WebP: 82, AVIF: 66, JXL: 85}
 
-const (
-	searchMargin = 0.004 // a result this close above the target is good enough
-	balancedSSIM = 0.975
-)
+// avifMinBytes is the size below which AVIF is not tried: its container costs
+// a few hundred bytes more than WebP's and the encoder is the slowest.
+const avifMinBytes = 10 << 10
 
 // formatsFor lists the formats to try, in order, for this client and image.
 func (e *Engine) formatsFor(in Input, alpha bool) []Format {
 	var out []Format
 	for _, f := range in.Profile.Formats {
-		if in.Caps.Has(f) && e.be.Supports(f) {
-			out = append(out, f)
+		if !in.Caps.Has(f) || !e.be.Supports(f) {
+			continue
 		}
+		if f == AVIF && len(in.Raw) < avifMinBytes {
+			continue
+		}
+		out = append(out, f)
 	}
 	if !alpha {
 		out = append(out, JPEG)
@@ -208,7 +233,11 @@ func (e *Engine) lossy(ctx context.Context, in Input, src image.Image, orientati
 			pic, resized = Resize(pic, w, h), true
 		}
 	}
-	ref, err := quality.NewReference(pic)
+	metric := in.Metric
+	if metric == "" {
+		metric = e.Metric
+	}
+	sc, err := newScorer(metric, pic, p)
 	if err != nil {
 		return base, nil
 	}
@@ -238,7 +267,11 @@ func (e *Engine) lossy(ctx context.Context, in Input, src image.Image, orientati
 				continue
 			}
 		}
-		res, spent := e.search(ctx, f, pic, ref, p, in, alpha, attempts)
+		if e.unreachable.skip(f, p, sc.metric) && !in.TryAll {
+			continue
+		}
+		res, spent, ceiling := e.search(ctx, f, pic, sc, in, attempts)
+		e.unreachable.record(f, p, sc.metric, res != nil, ceiling)
 		remaining -= spent
 		if res != nil {
 			res.Resized = resized
@@ -248,7 +281,7 @@ func (e *Engine) lossy(ctx context.Context, in Input, src image.Image, orientati
 		}
 		// A format that already saves a lot is enough: the rest would only
 		// spend CPU to find a few percent more.
-		if !in.TryAll && best != nil && best != base && len(best.Data)*100 <= len(in.Raw)*60 {
+		if !in.TryAll && best != nil && best != base && len(best.Data)*100 <= len(in.Raw)*55 {
 			break
 		}
 	}
@@ -263,16 +296,18 @@ func (e *Engine) lossy(ctx context.Context, in Input, src image.Image, orientati
 	return best, nil
 }
 
-// search finds the lowest quality of f that reaches the target similarity. It
-// aims a little above the target and corrects with the points it has measured:
-// interpolating once a pass and a fail bracket the target, extrapolating before.
-func (e *Engine) search(ctx context.Context, f Format, pic image.Image, ref *quality.Reference, p *Profile, in Input, alpha bool, attempts int) (*Result, time.Duration) {
-	target := p.TargetSSIM
-	if target <= 0 || target > 1 {
-		target = balancedSSIM
+// search finds the lowest quality of f that reaches the target of the scorer.
+// It aims a little above the target and corrects with the points it has
+// measured: interpolating once a pass and a fail bracket the target,
+// extrapolating before.
+func (e *Engine) search(ctx context.Context, f Format, pic image.Image, sc *scorer, in Input, attempts int) (res *Result, spent time.Duration, ceiling bool) {
+	target := sc.target
+	aim := target + sc.margin/2
+	start0 := balancedQuality[f]
+	if sc.metric != MetricDSSIM {
+		start0 = looseQuality[f]
 	}
-	aim := target + searchMargin/2
-	q := clamp(balancedQuality[f]+int((target-balancedSSIM)/qualitySlope[f]), 1, 100)
+	q := clamp(start0+int((target-sc.baseline())/sc.slope), 1, 100)
 	if in.Fixed > 0 {
 		q = clamp(in.Fixed, 1, 100)
 	}
@@ -287,14 +322,15 @@ func (e *Engine) search(ctx context.Context, f Format, pic image.Image, ref *qua
 	var last *point
 	var best *Result
 	start := time.Now()
-	spent := 0
-	for spent < attempts {
+	tries := 0
+	for tries < attempts {
 		if ctx.Err() != nil {
 			break
 		}
 		opts.Quality = q
+		t0 := time.Now()
 		data, err := e.be.Encode(f, pic, opts)
-		spent++
+		tries++
 		if err != nil {
 			break
 		}
@@ -302,14 +338,18 @@ func (e *Engine) search(ctx context.Context, f Format, pic image.Image, ref *qua
 		if err != nil {
 			break
 		}
-		s, err := ref.Similarity(dec)
+		s, err := sc.eval(dec)
 		if err != nil {
 			break
 		}
+		e.costs.observe(f, pixels, time.Since(t0))
+		if e.OnEncode != nil {
+			e.OnEncode(f, pixels, time.Since(t0))
+		}
 		ok := s >= target || in.Fixed > 0
-		e.tracef("%s q=%d: %d bytes, similarity %.4f (target %.3f), %s", f, q, len(data), s, target, time.Since(start).Round(time.Millisecond))
+		e.tracef("%s q=%d: %d bytes, %s %.5f (target %.5f), %s", f, q, len(data), sc.metric, sc.natural(s), sc.natural(target), time.Since(start).Round(time.Millisecond))
 		if ok && (best == nil || len(data) < len(best.Data)) {
-			best = &Result{Data: data, Format: f, SSIM: s, Quality: q, Note: f.String()}
+			best = &Result{Data: data, Format: f, Measure: sc.natural(s), Metric: sc.metric, Quality: q, Note: f.String()}
 		}
 		if in.Fixed > 0 {
 			break
@@ -319,14 +359,19 @@ func (e *Engine) search(ctx context.Context, f Format, pic image.Image, ref *qua
 			if pass == nil || q < pass.q {
 				pass = pt
 			}
-			if s-target < searchMargin {
+			if s-target < sc.margin {
 				break
 			}
-		} else if fail == nil || q > fail.q {
-			fail = pt
+		} else {
+			if q >= 100 {
+				ceiling = true
+			}
+			if fail == nil || q > fail.q {
+				fail = pt
+			}
 		}
 
-		slope := qualitySlope[f]
+		slope := sc.slope
 		if last != nil && last.q != q {
 			if m := (s - last.s) / float64(q-last.q); m > slope/4 && m < slope*4 {
 				slope = m
@@ -359,9 +404,10 @@ func (e *Engine) search(ctx context.Context, f Format, pic image.Image, ref *qua
 		q = next
 	}
 	if best != nil {
-		best.Attempts = spent
+		best.Attempts = tries
+		ceiling = false
 	}
-	return best, time.Since(start)
+	return best, time.Since(start), ceiling
 }
 
 func sign(v float64) float64 {
@@ -407,7 +453,7 @@ func (e *Engine) optimizePNG(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return nil, ErrUnsupported
 	}
-	base := &Result{Data: opt, Format: PNG, Lossless: true, SSIM: 1, Note: "png optimized"}
+	base := &Result{Data: opt, Format: PNG, Lossless: true, Note: "png optimized"}
 	if info.NeedsColorManagement() {
 		return base, nil
 	}
@@ -475,7 +521,7 @@ func (e *Engine) losslessModern(ctx context.Context, in Input, src image.Image) 
 		if err != nil {
 			continue
 		}
-		return &Result{Data: data, Format: f, Lossless: true, SSIM: 1, Attempts: 1, Note: f.String() + " lossless"}
+		return &Result{Data: data, Format: f, Lossless: true, Attempts: 1, Note: f.String() + " lossless"}
 	}
 	return nil
 }
@@ -500,19 +546,23 @@ func (e *Engine) quantized(ctx context.Context, in Input, src image.Image) *Resu
 	if err != nil {
 		return nil
 	}
-	ref, err := quality.NewReference(src)
+	metric := in.Metric
+	if metric == "" {
+		metric = e.Metric
+	}
+	sc, err := newScorer(metric, src, in.Profile)
 	if err != nil {
 		return nil
 	}
-	s, err := ref.Similarity(pal)
-	if err != nil || s < in.Profile.TargetSSIM {
+	s, err := sc.eval(pal)
+	if err != nil || s < sc.target {
 		return nil
 	}
 	data, err := pngopt.Encode(pal, pngopt.Default)
 	if err != nil {
 		return nil
 	}
-	return &Result{Data: data, Format: PNG, SSIM: s, Attempts: 1, Note: "png 256 colours"}
+	return &Result{Data: data, Format: PNG, Measure: sc.natural(s), Metric: sc.metric, Attempts: 1, Note: "png 256 colours"}
 }
 
 // Warm runs a tiny job through every codec of the backend. The first use of a

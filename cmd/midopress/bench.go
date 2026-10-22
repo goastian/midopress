@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/imgmeta"
 	"github.com/goastian/midopress/internal/quality"
 )
 
@@ -49,8 +50,9 @@ type benchRow struct {
 	Output   int     `json:"output_bytes"`
 	Format   string  `json:"format"`
 	Lossless bool    `json:"lossless"`
-	SSIM     float64 `json:"ssim"`
-	Verified float64 `json:"verified_ssim,omitempty"`
+	Metric   string  `json:"metric,omitempty"`
+	Measure  float64 `json:"measure"`
+	DSSIM    float64 `json:"verified_dssim"` // measured again after decoding the output; -1 when not measured
 	Millis   float64 `json:"ms"`
 	Changed  bool    `json:"changed"`
 	Note     string  `json:"note,omitempty"`
@@ -71,6 +73,10 @@ func cmdBench(args []string, stdout, stderr io.Writer) int {
 	tryAll := fs.Bool("try-all", false, "try every allowed format and keep the smallest, instead of stopping at the first that does well")
 	minGain := fs.Float64("min-gain", 0.02, "a result must be this fraction smaller than the original to count")
 	trace := fs.Bool("trace", false, "print every encode the quality search makes, to stderr")
+	metricName := fs.String("metric", "dssim", "metric that decides the quality: dssim, ssim or ssimulacra2")
+	backendName := fs.String("backend", "wasm", "image backend: wasm or vips (needs the vips build tag)")
+	dssimLimit := fs.Float64("dssim-limit", 0.002, "count the results whose measured dssim is at most this (needs -verify)")
+	passes := fs.Int("passes", 0, "instead of the engine, run the whole pipeline with its cache this many times over the images and report hit rate and latency")
 	verbose := fs.Bool("v", false, "print one line per image")
 	asJSON := fs.Bool("json", false, "print every row as JSON instead of tables")
 	if err := fs.Parse(args); err != nil {
@@ -100,7 +106,21 @@ func cmdBench(args []string, stdout, stderr io.Writer) int {
 		hints.DPR, _ = strconv.ParseFloat(dpr, 64)
 	}
 
-	engine := img.NewEngine(img.NewWASM())
+	be0, err := img.NewBackend(*backendName)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "midopress bench:", err)
+		return 2
+	}
+	metric, err := img.ParseMetric(*metricName)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "midopress bench:", err)
+		return 2
+	}
+	if *passes > 0 {
+		return benchPipeline(images, *passes, *profiles, *capsList, hints, *metricName, be0, *jobs, stdout, stderr)
+	}
+	engine := img.NewEngine(be0)
+	engine.Metric = metric
 	if *trace {
 		engine.Trace = func(f string, a ...any) { _, _ = fmt.Fprintf(stderr, f+"\n", a...) }
 	}
@@ -132,7 +152,7 @@ func cmdBench(args []string, stdout, stderr io.Writer) int {
 		_ = enc.Encode(rows)
 		return 0
 	}
-	printBench(stdout, rows, *verbose)
+	printBench(stdout, rows, *verbose, *dssimLimit)
 	return 0
 }
 
@@ -233,7 +253,7 @@ func runBench(engine *img.Engine, images []benchImage, capName string, caps img.
 }
 
 func benchOne(engine *img.Engine, b benchImage, capName string, caps img.Caps, prof *img.Profile, hints img.Hints, budget time.Duration, verify, tryAll bool, minGain float64) benchRow {
-	row := benchRow{Name: b.name, Category: b.category, Caps: capName, Profile: prof.Name, Original: len(b.raw), Output: len(b.raw), Format: b.format.String()}
+	row := benchRow{DSSIM: -1, Name: b.name, Category: b.category, Caps: capName, Profile: prof.Name, Original: len(b.raw), Output: len(b.raw), Format: b.format.String()}
 	ctx, cancel := context.WithTimeout(context.Background(), budget*2)
 	defer cancel()
 	start := time.Now()
@@ -243,60 +263,65 @@ func benchOne(engine *img.Engine, b benchImage, capName string, caps img.Caps, p
 		row.Error = err.Error()
 		return row
 	}
-	row.Note, row.Lossless, row.SSIM = res.Note, res.Lossless, res.SSIM
+	row.Note, row.Lossless, row.Measure, row.Metric = res.Note, res.Lossless, res.Measure, string(res.Metric)
 	if float64(len(res.Data)) <= float64(len(b.raw))*(1-minGain) {
 		row.Output, row.Format, row.Changed = len(res.Data), res.Format.String(), true
 	} else {
-		row.SSIM, row.Lossless, row.Note = 1, true, "kept the original"
+		row.Lossless, row.Note = true, "kept the original"
 	}
 	if verify && row.Changed && !res.Lossless && res.Format != img.GIF {
-		row.Verified = verifyResult(engine, b, res, prof, hints)
+		row.DSSIM = verifyResult(engine, b, res, prof, hints)
 	}
 	return row
 }
 
 // verifyResult measures a result the way the engine did not: it decodes the
 // output with the backend and compares it with the original decoded by the
-// standard library.
+// standard library, whole and with the dssim implementation. It returns -1 when
+// the result can not be compared (it was resized, or could not be decoded).
 func verifyResult(engine *img.Engine, b benchImage, res *img.Result, prof *img.Profile, hints img.Hints) float64 {
 	var src image.Image
 	var err error
 	switch b.format {
 	case img.JPEG:
 		src, err = stdjpeg.Decode(bytes.NewReader(b.raw))
+		if m, merr := imgmeta.ParseJPEG(b.raw); err == nil && merr == nil {
+			src = img.Orient(src, m.Orientation)
+		}
 	case img.PNG:
 		src, err = png.Decode(bytes.NewReader(b.raw))
 	}
 	if err != nil || src == nil || res.Resized {
-		return 0
+		return -1
 	}
 	got, err := engine.Backend().Decode(res.Format, res.Data)
 	if err != nil || got.Bounds().Size() != src.Bounds().Size() {
-		return 0
+		return -1
 	}
-	s, err := quality.Similarity(src, got)
+	d, err := quality.DSSIM(src, got)
 	if err != nil {
-		return 0
+		return -1
 	}
-	return s
+	return d
 }
 
 type agg struct {
-	n, changed       int
-	orig, out        int
-	ssimSum, ssimMin float64
-	ssimN            int
-	verifiedMin      float64
-	verifiedN        int
-	ms               float64
-	formats          map[string]int
-	errors           int
+	n, changed int
+	orig, out  int
+	lossy      int     // changed images that are not bit exact
+	dssimSum   float64 // of the measured ones
+	dssimMax   float64
+	measured   int
+	over       int // measured above the limit
+	limit      float64
+	ms         float64
+	formats    map[string]int
+	errors     int
 }
 
 func (a *agg) add(r benchRow) {
 	if a.formats == nil {
 		a.formats = map[string]int{}
-		a.ssimMin, a.verifiedMin = 1, 1
 	}
 	a.n++
 	a.orig += r.Original
@@ -306,18 +331,22 @@ func (a *agg) add(r benchRow) {
 		a.errors++
 		return
 	}
-	if r.Changed {
-		a.changed++
-		a.formats[r.Format]++
-		if !r.Lossless {
-			a.ssimSum += r.SSIM
-			a.ssimN++
-			a.ssimMin = min(a.ssimMin, r.SSIM)
-		}
+	if !r.Changed {
+		return
 	}
-	if r.Verified > 0 {
-		a.verifiedN++
-		a.verifiedMin = min(a.verifiedMin, r.Verified)
+	a.changed++
+	a.formats[r.Format]++
+	if r.Lossless {
+		return
+	}
+	a.lossy++
+	if r.DSSIM >= 0 {
+		a.measured++
+		a.dssimSum += r.DSSIM
+		a.dssimMax = max(a.dssimMax, r.DSSIM)
+		if r.DSSIM > a.limit {
+			a.over++
+		}
 	}
 }
 
@@ -337,7 +366,7 @@ func (a *agg) formatList() string {
 	return strings.Join(parts, ", ")
 }
 
-func printBench(w io.Writer, rows []benchRow, verbose bool) {
+func printBench(w io.Writer, rows []benchRow, verbose bool, limit float64) {
 	type key struct{ caps, profile string }
 	var order []key
 	groups := map[key][]benchRow{}
@@ -354,14 +383,17 @@ func printBench(w io.Writer, rows []benchRow, verbose bool) {
 		_, _ = fmt.Fprintf(w, "\n### client: %s, profile: %s\n\n", k.caps, k.profile)
 		if verbose {
 			tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(tw, "image\toriginal\toutput\tsaved\tformat\tssim\tms\tnote")
+			_, _ = fmt.Fprintln(tw, "image\toriginal\toutput\tsaved\tformat\tmetric\tdssim\tms\tnote")
 			for _, r := range rs {
-				ssim := "-"
+				m, d := "-", "-"
 				if r.Changed && !r.Lossless {
-					ssim = fmt.Sprintf("%.4f", r.SSIM)
+					m = fmt.Sprintf("%s %.5f", r.Metric, r.Measure)
+					if r.DSSIM >= 0 {
+						d = fmt.Sprintf("%.5f", r.DSSIM)
+					}
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%.1f%%\t%s\t%s\t%.0f\t%s%s\n", r.Name, r.Original, r.Output,
-					100-float64(r.Output)*100/float64(r.Original), r.Format, ssim, r.Millis, r.Note, r.Error)
+				_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%.1f%%\t%s\t%s\t%s\t%.0f\t%s%s\n", r.Name, r.Original, r.Output,
+					100-float64(r.Output)*100/float64(r.Original), r.Format, m, d, r.Millis, r.Note, r.Error)
 			}
 			_ = tw.Flush()
 			_, _ = fmt.Fprintln(w)
@@ -369,10 +401,10 @@ func printBench(w io.Writer, rows []benchRow, verbose bool) {
 
 		cats := map[string]*agg{}
 		var names []string
-		total := &agg{}
+		total := &agg{limit: limit}
 		for _, r := range rs {
 			if cats[r.Category] == nil {
-				cats[r.Category] = &agg{}
+				cats[r.Category] = &agg{limit: limit}
 				names = append(names, r.Category)
 			}
 			cats[r.Category].add(r)
@@ -380,22 +412,23 @@ func printBench(w io.Writer, rows []benchRow, verbose bool) {
 		}
 		sort.Strings(names)
 
-		_, _ = fmt.Fprintln(w, "| category | images | changed | original | output | saved | mean ssim | min ssim | formats | ms/image |")
-		_, _ = fmt.Fprintln(w, "|---|---:|---:|---:|---:|---:|---:|---:|---|---:|")
+		_, _ = fmt.Fprintln(w, "| category | images | changed | original | output | saved | lossy | mean dssim | worst dssim | formats | ms/image |")
+		_, _ = fmt.Fprintln(w, "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|")
 		line := func(name string, a *agg) {
-			mean, mn := "-", "-"
-			if a.ssimN > 0 {
-				mean, mn = fmt.Sprintf("%.4f", a.ssimSum/float64(a.ssimN)), fmt.Sprintf("%.4f", a.ssimMin)
+			mean, worst := "-", "-"
+			if a.measured > 0 {
+				mean, worst = fmt.Sprintf("%.5f", a.dssimSum/float64(a.measured)), fmt.Sprintf("%.5f", a.dssimMax)
 			}
-			_, _ = fmt.Fprintf(w, "| %s | %d | %d | %d | %d | %.1f%% | %s | %s | %s | %.0f |\n",
-				name, a.n, a.changed, a.orig, a.out, a.saved(), mean, mn, a.formatList(), a.ms/float64(a.n))
+			_, _ = fmt.Fprintf(w, "| %s | %d | %d | %d | %d | %.1f%% | %d | %s | %s | %s | %.0f |\n",
+				name, a.n, a.changed, a.orig, a.out, a.saved(), a.lossy, mean, worst, a.formatList(), a.ms/float64(a.n))
 		}
 		for _, n := range names {
 			line(n, cats[n])
 		}
 		line("**all**", total)
-		if total.verifiedN > 0 {
-			_, _ = fmt.Fprintf(w, "\nre-measured independently: %d results, lowest similarity %.4f\n", total.verifiedN, total.verifiedMin)
+		if total.measured > 0 {
+			_, _ = fmt.Fprintf(w, "\nmeasured again after decoding: %d lossy results, %d above dssim %g, worst %.5f\n",
+				total.measured, total.over, limit, total.dssimMax)
 		}
 		if total.errors > 0 {
 			_, _ = fmt.Fprintf(w, "\n%d images could not be processed (left unchanged)\n", total.errors)

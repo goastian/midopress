@@ -2,8 +2,10 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/xcache"
@@ -26,8 +28,9 @@ type background struct {
 }
 
 type bgJob struct {
-	key string
-	in  img.Input
+	key     string
+	in      img.Input
+	expires time.Time
 }
 
 const bgQueueLen = 32
@@ -38,12 +41,12 @@ func newBackground(p *Pipeline) *background {
 }
 
 func (b *background) enabled() bool {
-	return b.p.cfg.Image.Background && b.p.cfg.Image.CacheSize > 0
+	return b.p.cfg.Image.Background
 }
 
 // submit queues a job unless the same one is already waiting or the queue is
 // full. in.Raw is kept until the job is done and must not be modified.
-func (b *background) submit(key string, in img.Input) {
+func (b *background) submit(key string, in img.Input, expires time.Time) {
 	if !b.enabled() || b.ctx.Err() != nil {
 		return
 	}
@@ -62,7 +65,7 @@ func (b *background) submit(key string, in img.Input) {
 	b.inflight[key] = struct{}{}
 	b.mu.Unlock()
 	select {
-	case b.queue <- bgJob{key, in}:
+	case b.queue <- bgJob{key, in, expires}:
 	default:
 		b.done(key)
 	}
@@ -101,9 +104,15 @@ func (b *background) run(j bgJob) {
 	j.in.Budget = 0
 	res, err := p.engine.Optimize(ctx, j.in)
 	if err != nil {
+		p.recordBackground("failed")
+		if errors.Is(err, img.ErrBudget) || errors.Is(err, img.ErrUnsupported) {
+			// with no limit of time, that is a verdict on the image itself
+			p.cache.Add(j.key, &xcache.Entry{Keep: true, Expires: j.expires})
+		}
 		return
 	}
-	p.cache.Add(j.key, entryFor(res, len(j.in.Raw), p.cfg.MinGain))
+	p.recordBackground("done")
+	p.cache.Add(j.key, entryFor(res, len(j.in.Raw), p.cfg.MinGain, j.expires))
 }
 
 func (b *background) close() {
@@ -111,9 +120,16 @@ func (b *background) close() {
 	b.wg.Wait()
 }
 
-func entryFor(res *img.Result, original int, minGain float64) *xcache.Entry {
+func entryFor(res *img.Result, original int, minGain float64, expires time.Time) *xcache.Entry {
 	if float64(len(res.Data)) > float64(original)*(1-minGain) {
-		return &xcache.Entry{Keep: true}
+		return &xcache.Entry{Keep: true, Expires: expires}
 	}
-	return &xcache.Entry{Data: res.Data, ContentType: res.Format.MIME()}
+	return &xcache.Entry{Data: res.Data, ContentType: res.Format.MIME(), Expires: expires}
+}
+
+// idle reports whether no job is waiting or running.
+func (b *background) idle() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.inflight) == 0
 }

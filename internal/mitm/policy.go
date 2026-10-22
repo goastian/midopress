@@ -3,6 +3,7 @@ package mitm
 import (
 	"errors"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/goastian/midopress/internal/lru"
@@ -25,8 +26,9 @@ type PolicyOptions struct {
 // Policy decides which hosts are tunnelled instead of intercepted. It is safe
 // for concurrent use.
 type Policy struct {
-	static *rules.HostMatcher
-	auto   *lru.Cache[string, struct{}]
+	static      atomic.Pointer[rules.HostMatcher]
+	useDefaults bool
+	auto        *lru.Cache[string, struct{}]
 }
 
 // NewPolicy builds a Policy, returning an error listing invalid patterns.
@@ -45,13 +47,29 @@ func NewPolicy(opts PolicyOptions) (*Policy, error) {
 	if opts.AutoMaxEntries <= 0 {
 		opts.AutoMaxEntries = defaultAutoMaxEntries
 	}
-	return &Policy{static: m, auto: lru.New[string, struct{}](opts.AutoMaxEntries, opts.AutoTTL)}, nil
+	p := &Policy{useDefaults: opts.UseDefaults, auto: lru.New[string, struct{}](opts.AutoMaxEntries, opts.AutoTTL)}
+	p.static.Store(m)
+	return p, nil
+}
+
+// SetPatterns replaces the static patterns, keeping the default list when the
+// policy was built with it. On error nothing changes.
+func (p *Policy) SetPatterns(patterns []string) error {
+	if p.useDefaults {
+		patterns = append(DefaultPassthroughPatterns(), patterns...)
+	}
+	m, err := rules.NewHostMatcher(patterns)
+	if err != nil {
+		return err
+	}
+	p.static.Store(m)
+	return nil
 }
 
 // Passthrough reports whether host (optionally with a port) must be tunnelled.
 func (p *Policy) Passthrough(host string) bool {
 	h := rules.Normalize(host)
-	if p.static.Match(h) {
+	if p.static.Load().Match(h) {
 		return true
 	}
 	_, ok := p.auto.Get(h)

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/goastian/midopress/internal/mitm"
+	"github.com/goastian/midopress/internal/pipeline"
+	"github.com/goastian/midopress/internal/rules"
 )
 
 const tlsHandshakeRecord = 0x16
@@ -34,7 +36,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := net.JoinHostPort(host, port)
+	cl := pipeline.ClientFrom(r.Context())
 	intercept := p.opts.Issuer != nil && !p.opts.Policy.Passthrough(host)
+	if intercept {
+		switch p.opts.Pipeline.HostDecision(host, cl.Addr).Action {
+		case rules.ActionPassthrough, rules.ActionPassthroughTLS:
+			intercept = false
+		}
+	}
 
 	// A plain tunnel connects first, so that an unreachable host is reported to
 	// the client as an error status. An intercepted one connects lazily, once
@@ -60,7 +69,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.tunnels.tunnel(client, up)
 		return
 	}
-	p.intercept(client, host, target)
+	p.intercept(client, host, target, cl.Device)
 	if sc, ok := client.(*streamConn); ok {
 		// An HTTP/2 stream ends when its handler returns, so wait for the
 		// intercepted connection to be done with it.
@@ -94,7 +103,7 @@ func (p *Proxy) takeover(w http.ResponseWriter, r *http.Request) (net.Conn, erro
 
 // intercept decrypts the client side of the tunnel and hands the connection to
 // the HTTP server that serves the requests found inside it.
-func (p *Proxy) intercept(client net.Conn, host, target string) {
+func (p *Proxy) intercept(client net.Conn, host, target, device string) {
 	first, conn, err := p.sniff(client)
 	if err != nil {
 		_ = client.Close()
@@ -111,7 +120,7 @@ func (p *Proxy) intercept(client net.Conn, host, target string) {
 		return
 	}
 
-	tc := tls.Server(&hostConn{Conn: conn, host: host}, p.tlsConf)
+	tc := tls.Server(&hostConn{Conn: conn, host: host, device: device}, p.tlsConf)
 	ctx, cancel := context.WithTimeout(context.Background(), p.opts.HandshakeTimeout)
 	err = tc.HandshakeContext(ctx)
 	cancel()

@@ -31,7 +31,7 @@ func (e *Engine) optimizeGIF(ctx context.Context, in Input) (*Result, error) {
 	// A still image: the first frame, or the only one.
 	frames := composeFrames(g, 1)
 	still := frames[0]
-	base := &Result{Data: in.Raw, Format: GIF, Lossless: true, SSIM: 1, Note: "original gif"}
+	base := &Result{Data: in.Raw, Format: GIF, Lossless: true, Note: "original gif"}
 	if opt := e.stillAsPNG(still); opt != nil && len(opt.Data) < len(base.Data) {
 		base = opt
 	}
@@ -56,7 +56,7 @@ func (e *Engine) stillAsPNG(pic image.Image) *Result {
 	if err != nil {
 		return nil
 	}
-	return &Result{Data: data, Format: PNG, Lossless: true, SSIM: 1, Note: "gif as png"}
+	return &Result{Data: data, Format: PNG, Lossless: true, Note: "gif as png"}
 }
 
 func (e *Engine) optimizeAnimation(ctx context.Context, in Input, g *stdgif.GIF) (*Result, error) {
@@ -89,7 +89,7 @@ func (e *Engine) optimizeAnimation(ctx context.Context, in Input, g *stdgif.GIF)
 		if err != nil {
 			return
 		}
-		r := &Result{Data: data, Format: WebP, Lossless: lossless, SSIM: ssimOrOne(lossless), Attempts: 1, Quality: q, Note: "animated webp"}
+		r := &Result{Data: data, Format: WebP, Lossless: lossless, Attempts: 1, Quality: q, Note: "animated webp"}
 		if lossless {
 			r.Note += " lossless"
 		}
@@ -118,13 +118,6 @@ func (e *Engine) optimizeAnimation(ctx context.Context, in Input, g *stdgif.GIF)
 		return nil, ErrBudget
 	}
 	return best, nil
-}
-
-func ssimOrOne(lossless bool) float64 {
-	if lossless {
-		return 1
-	}
-	return 0 // not measured for animations
 }
 
 // composeFrames draws the first n frames of a GIF onto a canvas, honouring the

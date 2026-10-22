@@ -132,9 +132,12 @@ pipeline:
     max_pixels: 16000000
     # Longest a request waits for an image to be recoded.
     timeout: 3s
-    # Memory used to keep recoded images and fonts, so that a popular file is
-    # only recoded once. 0 disables the cache.
-    cache_size: 256MiB
+    # What decides that a recoded image is close enough to the original:
+    # dssim (default), ssim, or ssimulacra2. Every profile has a target for each.
+    metric: dssim
+    # wasm needs nothing installed. vips needs a binary built with -tags vips and
+    # libvips on the machine, and is faster.
+    backend: wasm
     # AVIF and JPEG XL take seconds in WebAssembly. With this on, an image that
     # does not fit in timeout is sent as it is and recoded in the background,
     # and the next request finds the best result in the cache.
@@ -142,6 +145,71 @@ pipeline:
     background_timeout: 2m
     # Compile the image codecs when the proxy starts instead of on the first image.
     warmup: true
+
+# Where results are kept so that a popular image or font is only recoded once.
+# They are addressed by the content of the original, so they never go stale; the
+# TTLs only stop what the origin marks as short lived from taking space. The
+# origin's Cache-Control (s-maxage, max-age, immutable, no-store, ...) and Expires
+# choose a TTL between min_ttl and max_ttl.
+cache:
+  memory: 256MiB
+  # A disk tier survives restarts. Empty dir means no disk tier.
+  dir: ""
+  max_size: 5GiB
+  min_ttl: 1m
+  max_ttl: 168h
+  default_ttl: 1h
+
+# Change a built-in profile or define a new one. Every field is optional and
+# starts from the base profile. For example:
+#
+# profiles:
+#   balanced:
+#     target_dssim: 0.0015
+#     formats: [jxl, webp]
+#   mobile:
+#     base: saver
+#     resize_to_viewport: true
+#     animated_to_still: true
+#     text: {brotli: 7}
+#
+# The fields are target_dssim, target_ssim, target_ssimulacra2, attempts,
+# formats, resize_to_viewport, photo_colors, quantize_png, animated_to_still,
+# animated_quality and text {brotli, gzip, zstd, brotli_static}. A device can be
+# given a profile with `midopress device add -profile NAME`.
+profiles: {}
+
+# Rules decide what happens to each request or response, in order. `action` is
+# passthrough (leave the response alone) or passthrough_tls (do not intercept
+# the HTTPS connection, only with conditions on the host); `profile` picks a
+# profile; `set` changes minify_html, minify_css, minify_js, minify_svg,
+# minify_json (off, safe, aggressive, true, false), images (bool), text (bool)
+# and quality (1 to 100). Profile and set accumulate, the first action stops the
+# evaluation. The conditions use the mitmproxy filter language: ~d domain, ~u
+# URL, ~t content type, ~c status, ~m method, ~h/~hq/~hs headers, ~b body, ~q
+# request, ~s response, ~src/~dst address, with & | ! and parentheses. For
+# example:
+#
+# rules:
+#   - match: '~d (bank|banco|paypal|health)\.'
+#     action: passthrough_tls
+#   - match: '~u \.(mp4|webm|m3u8|ts)$ | ~t video/'
+#     action: passthrough
+#   - match: '~d cdn\.example\.com & ~t image/'
+#     profile: extreme
+#   - match: '~u /app\.js$'
+#     set: {minify_js: true}
+#
+# Rules, profiles, mitm.passthrough, the default profile, minification and
+# log.level are applied when the file changes or on SIGHUP, without a restart.
+rules: []
+
+metrics:
+  # Prometheus text format at /metrics.
+  prometheus: true
+  # Serve it on a listener of its own, for example 127.0.0.1:9100. Empty serves it
+  # on the proxy port, to the clients the proxy accepts.
+  addr: ""
 
 log:
   level: info

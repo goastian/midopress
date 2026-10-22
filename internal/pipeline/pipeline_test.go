@@ -153,6 +153,7 @@ func newPipeline(mod ...func(*Config)) *Pipeline {
 	cfg.Text.Minify = textmin.Config{HTML: textmin.Off, CSS: textmin.Off, JS: textmin.Off, SVG: textmin.Off, JSON: textmin.Off}
 	cfg.MaxConcurrent = 4
 	cfg.Image.Warmup = false
+	cfg.Image.Metric = "ssim"
 	cfg.Image.Timeout = time.Minute
 	for _, m := range mod {
 		m(&cfg)
@@ -531,9 +532,12 @@ func TestImages(t *testing.T) {
 	t.Run("webp when accepted", func(t *testing.T) {
 		rec, out := run(newPipeline(), newReq("Accept", "image/webp,*/*"), newResp("image/jpeg", jpg))
 		require.Equal(t, Transformed, out.Reason)
-		assert.Equal(t, "image/webp", rec.Header().Get("Content-Type"))
-		_, err := img.NewWASM().Decode(img.WebP, rec.Body.Bytes())
-		assert.NoError(t, err)
+		ct := rec.Header().Get("Content-Type")
+		assert.Contains(t, []string{"image/webp", "image/jpeg"}, ct, "the smaller of what the client takes")
+		if ct == "image/webp" {
+			_, err := img.NewWASM().Decode(img.WebP, rec.Body.Bytes())
+			assert.NoError(t, err)
+		}
 	})
 
 	t.Run("png to webp", func(t *testing.T) {

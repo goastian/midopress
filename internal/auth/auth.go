@@ -60,8 +60,9 @@ type Decision struct {
 type digest = [sha256.Size]byte
 
 type deviceEntry struct {
-	id   string
-	hash digest
+	id      string
+	hash    digest
+	profile string
 }
 
 // snapshot is an immutable view of the devices file.
@@ -228,7 +229,7 @@ func (a *Authenticator) Reload() error {
 		if err != nil {
 			return err
 		}
-		e := &deviceEntry{id: d.ID, hash: h}
+		e := &deviceEntry{id: d.ID, hash: h, profile: d.Profile}
 		snap.byID[d.ID] = e
 		snap.byToken[h] = e
 	}
@@ -381,6 +382,18 @@ func (a *Authenticator) verifyBasic(user, pass []byte) (string, bool) {
 		return a.user, true
 	}
 	return "", false
+}
+
+// DeviceProfile returns the profile assigned to a device when it was added, or
+// the empty string for none or for a device that does not exist.
+func (a *Authenticator) DeviceProfile(id string) string {
+	if a == nil || a.mode != ModeToken {
+		return ""
+	}
+	if e, ok := a.devices.Load().byID[id]; ok {
+		return e.profile
+	}
+	return ""
 }
 
 func (a *Authenticator) verifyDeviceBasic(id, token []byte) (string, bool) {

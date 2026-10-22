@@ -13,8 +13,8 @@ import (
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/fonts"
 	"github.com/goastian/midopress/internal/httpx"
-	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/negotiate"
+	"github.com/goastian/midopress/internal/textmin"
 	"github.com/goastian/midopress/internal/xcache"
 )
 
@@ -32,7 +32,7 @@ func pickTarget(accept negotiate.Encodings) codec.Encoding {
 	return codec.None
 }
 
-func (p *Pipeline) handleText(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string) Outcome {
+func (p *Pipeline) handleText(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string, fl *flow) Outcome {
 	if len(resp.Header["Content-Encoding"]) > 1 {
 		return p.passthrough(w, resp, PassEncoding)
 	}
@@ -41,9 +41,9 @@ func (p *Pipeline) handleText(w http.ResponseWriter, req *http.Request, resp *ht
 		return p.passthrough(w, resp, PassEncoding)
 	}
 	target := pickTarget(negotiate.ParseAcceptEncoding(req.Header.Get("Accept-Encoding")))
-	minify := p.min.Handles(mt)
+	minifier := fl.lv.minifier(fl.opts.minify)
+	minify := minifier.Handles(mt)
 	asFont := fonts.Convertible(mt) && wantsWOFF2(req.Header)
-	prof := p.profileFor(req.Header)
 	buffered := resp.ContentLength >= 0 && resp.ContentLength <= p.cfg.Text.BufferMax
 	if !buffered {
 		minify, asFont = false, false
@@ -67,9 +67,9 @@ func (p *Pipeline) handleText(w http.ResponseWriter, req *http.Request, resp *ht
 	}
 
 	if buffered {
-		return p.textBuffered(w, resp, mt, srcEnc, target, minify, asFont, prof)
+		return p.textBuffered(w, resp, mt, srcEnc, target, minify, asFont, fl, minifier)
 	}
-	return p.textStream(w, resp, target, prof)
+	return p.textStream(w, resp, target, fl)
 }
 
 // wantsWOFF2 reports whether the client asked for a font in a way that shows it
@@ -99,7 +99,8 @@ func cacheable(h http.Header) bool {
 	return false
 }
 
-func (p *Pipeline) textBuffered(w http.ResponseWriter, resp *http.Response, mt string, srcEnc, target codec.Encoding, minify, asFont bool, prof *img.Profile) Outcome {
+func (p *Pipeline) textBuffered(w http.ResponseWriter, resp *http.Response, mt string, srcEnc, target codec.Encoding, minify, asFont bool, fl *flow, minifier *textmin.Minifier) Outcome {
+
 	size := resp.ContentLength
 	decodedCap := p.cfg.Text.MaxDecoded
 	if srcEnc != codec.None {
@@ -141,7 +142,7 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, resp *http.Response, mt s
 	}
 
 	if asFont {
-		if e := p.convertFont(plain); e != nil {
+		if e := p.convertFont(plain, resp.Header); e != nil {
 			if !p.worthIt(len(e.Data), len(wire)) {
 				return p.writeBuffered(w, resp, wire, in.n, PassNotSmaller)
 			}
@@ -163,7 +164,7 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, resp *http.Response, mt s
 		min := p.getBuf()
 		defer p.putBuf(min)
 		if p.acquireCPU() {
-			err := p.min.Minify(mt, min, plain)
+			err := minifier.Minify(mt, min, plain)
 			p.releaseCPU()
 			if err == nil && min.Len() > 0 {
 				plain = min.Bytes()
@@ -174,7 +175,7 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, resp *http.Response, mt s
 	result := plain
 	if target != codec.None {
 		static := target == codec.Brotli && cacheable(resp.Header)
-		comp, err := p.compress(prof, target, plain, static)
+		comp, err := p.compress(fl, target, plain, static, resp.Header)
 		if err != nil {
 			return p.writeBuffered(w, resp, wire, in.n, PassError)
 		}
@@ -210,8 +211,9 @@ func markRecoded(h http.Header) {
 // compress compresses plain with the levels of the profile. Responses that look
 // cacheable use the slow brotli level of the profile, and their result is kept
 // by content so that a popular file pays for it once.
-func (p *Pipeline) compress(prof *img.Profile, target codec.Encoding, plain []byte, static bool) ([]byte, error) {
-	pair := p.texts[prof.Name]
+func (p *Pipeline) compress(fl *flow, target codec.Encoding, plain []byte, static bool, h http.Header) ([]byte, error) {
+	prof := fl.prof
+	pair := fl.lv.texts[prof.Name]
 	if !static {
 		comp := p.getBuf()
 		defer p.putBuf(comp)
@@ -229,13 +231,13 @@ func (p *Pipeline) compress(prof *img.Profile, target codec.Encoding, plain []by
 	if err := pair[1].Compress(target, &comp, plain); err != nil {
 		return nil, err
 	}
-	p.cache.Add(key, &xcache.Entry{Data: comp.Bytes()})
+	p.cache.Add(key, &xcache.Entry{Data: comp.Bytes(), Expires: p.expiry(h)})
 	return comp.Bytes(), nil
 }
 
 // convertFont turns a TTF, OTF or WOFF font into WOFF2, or returns nil when it
 // can not be done safely. Results are kept by content.
-func (p *Pipeline) convertFont(plain []byte) *xcache.Entry {
+func (p *Pipeline) convertFont(plain []byte, h http.Header) *xcache.Entry {
 	sum := sha256.Sum256(plain)
 	key := "font|" + string(sum[:])
 	if e, ok := p.cache.Get(key); ok {
@@ -250,18 +252,18 @@ func (p *Pipeline) convertFont(plain []byte) *xcache.Entry {
 	defer p.releaseCPU()
 	out, err := fonts.ToWOFF2(plain)
 	if err != nil {
-		p.cache.Add(key, &xcache.Entry{Keep: true})
+		p.cache.Add(key, &xcache.Entry{Keep: true, Expires: p.expiry(h)})
 		return nil
 	}
-	e := &xcache.Entry{Data: out, ContentType: fonts.MediaTypeWOFF2}
+	e := &xcache.Entry{Data: out, ContentType: fonts.MediaTypeWOFF2, Expires: p.expiry(h)}
 	p.cache.Add(key, e)
 	return e
 }
 
-func (p *Pipeline) textStream(w http.ResponseWriter, resp *http.Response, target codec.Encoding, prof *img.Profile) Outcome {
+func (p *Pipeline) textStream(w http.ResponseWriter, resp *http.Response, target codec.Encoding, fl *flow) Outcome {
 	in := &errReader{r: resp.Body}
 	cw := &countWriter{w: w}
-	sw, err := p.texts[prof.Name][0].NewWriter(target, cw, resp.ContentLength)
+	sw, err := fl.lv.texts[fl.prof.Name][0].NewWriter(target, cw, resp.ContentLength)
 	if err != nil {
 		return p.passthrough(w, resp, PassError)
 	}

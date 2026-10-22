@@ -15,11 +15,15 @@ import (
 	"github.com/goastian/midopress/internal/auth"
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/config"
+	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/metrics"
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/pipeline"
 	"github.com/goastian/midopress/internal/proxy"
+	"github.com/goastian/midopress/internal/rules"
 	"github.com/goastian/midopress/internal/textmin"
 	"github.com/goastian/midopress/internal/upstream"
+	"github.com/goastian/midopress/internal/xcache"
 )
 
 // Option customizes a Server, mostly for tests.
@@ -30,12 +34,33 @@ func WithUpstream(fn func(*upstream.Options)) Option {
 	return func(s *Server) { s.upstreamHook = fn }
 }
 
+// WithVersion sets the version shown in the build info metric.
+func WithVersion(v string) Option { return func(s *Server) { s.version = v } }
+
+// WithConfigLoader gives the server a way to read the configuration again.
+// Reload uses it to apply what can change while running: rules, profiles, the
+// default profile, minification, TTLs, the host patterns that are never
+// intercepted, and the log level.
+func WithConfigLoader(fn func() (*config.Config, error)) Option {
+	return func(s *Server) { s.loader = fn }
+}
+
+// WithLogLevel lets Reload change the level of the logger.
+func WithLogLevel(l *slog.LevelVar) Option { return func(s *Server) { s.level = l } }
+
 // Server is a configured proxy and its listeners.
 type Server struct {
 	cfg *config.Config
 	log *slog.Logger
 
 	upstreamHook func(*upstream.Options)
+	version      string
+	loader       func() (*config.Config, error)
+	level        *slog.LevelVar
+
+	cache    *xcache.Cache
+	registry *metrics.Registry
+	policy   *mitm.Policy
 
 	auth    *auth.Authenticator
 	pipe    *pipeline.Pipeline
@@ -115,8 +140,37 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 		s.upstreamHook(&upOpts)
 	}
 
-	s.pipe = pipeline.New(pipelineConfig(cfg))
+	s.policy = policy
+	s.cache, err = xcache.Open(xcache.Options{
+		MemoryBytes: int64(cfg.Cache.Memory),
+		Dir:         cfg.Cache.Dir,
+		DiskBytes:   int64(cfg.Cache.MaxSize),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cache: %w", err)
+	}
+	pcfg, err := pipelineConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	pcfg.Cache = s.cache
+	if pcfg.Backend, err = img.NewBackend(cfg.Pipeline.Image.Backend); err != nil {
+		return nil, err
+	}
+	s.pipe = pipeline.New(pcfg)
+	var metricsHandler http.Handler
+	if cfg.Metrics.Prometheus {
+		s.registry = metrics.NewRegistry()
+		s.registry.MustRegisterGoCollector()
+		s.registry.MustRegisterProcessCollector()
+		s.registry.NewBuildInfo(s.version)
+		s.pipe.Instrument(s.registry)
+		if cfg.Metrics.Addr == "" {
+			metricsHandler = s.registry.Handler()
+		}
+	}
 	s.proxy = proxy.New(proxy.Options{
+		Metrics:   metricsHandler,
 		Auth:      a,
 		Upstream:  upstream.New(upOpts),
 		Pipeline:  s.pipe,
@@ -131,6 +185,9 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 		LogURLs:          cfg.Log.URLs,
 		HandshakeTimeout: cfg.Server.TLSHandshakeTimeout,
 	})
+	if s.registry != nil {
+		s.proxy.Instrument(s.registry)
+	}
 
 	if cfg.Listen.TLS.Cert != "" {
 		s.certs, err = newCertReloader(cfg.Listen.TLS.Cert, cfg.Listen.TLS.Key)
@@ -155,11 +212,24 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 	}
 	s.main = newHTTP(s.proxy.Handler())
 	s.mitmSrv = newHTTP(s.proxy.MITMHandler())
+	s.mitmSrv.ConnContext = s.proxy.ConnContext
 	return s, nil
 }
 
-func pipelineConfig(cfg *config.Config) pipeline.Config {
+func pipelineConfig(cfg *config.Config) (pipeline.Config, error) {
 	p := cfg.Pipeline
+	profiles, err := img.BuildProfiles(cfg.Profiles)
+	if err != nil {
+		return pipeline.Config{}, fmt.Errorf("profiles: %w", err)
+	}
+	names := make([]string, 0, len(profiles))
+	for n := range profiles {
+		names = append(names, n)
+	}
+	rs, err := rules.Compile(cfg.Rules, rules.WithProfiles(names...))
+	if err != nil {
+		return pipeline.Config{}, fmt.Errorf("rules: %w", err)
+	}
 	mode := func(m string) textmin.Mode { return textmin.Mode(m) }
 	return pipeline.Config{
 		MinGain:       p.MinGain,
@@ -167,6 +237,9 @@ func pipelineConfig(cfg *config.Config) pipeline.Config {
 		TranscodeWait: p.TranscodeWait,
 		MemoryBudget:  int64(p.MemoryBudget),
 		Profile:       p.Profile,
+		Profiles:      profiles,
+		Rules:         rs,
+		TTL:           pipeline.TTLConfig{Min: cfg.Cache.MinTTL, Max: cfg.Cache.MaxTTL, Default: cfg.Cache.DefaultTTL},
 		Levels:        codec.Levels{Brotli: p.Text.Brotli, Gzip: p.Text.Gzip, Zstd: p.Text.Zstd},
 		Text: pipeline.TextConfig{
 			Minify: textmin.Config{
@@ -187,12 +260,12 @@ func pipelineConfig(cfg *config.Config) pipeline.Config {
 			MaxBytes:          int64(p.Image.MaxBytes),
 			MaxPixels:         p.Image.MaxPixels,
 			Timeout:           p.Image.Timeout,
-			CacheSize:         int64(p.Image.CacheSize),
+			Metric:            p.Image.Metric,
 			Background:        p.Image.Background,
 			BackgroundTimeout: p.Image.BackgroundTimeout,
 			Warmup:            p.Image.Warmup,
 		},
-	}
+	}, nil
 }
 
 // Listen opens the listening socket. Run calls it when it has not been called.
@@ -237,7 +310,44 @@ func (s *Server) Reload() error {
 	if err := s.auth.Reload(); err != nil {
 		errs = append(errs, fmt.Errorf("devices: %w", err))
 	}
+	if s.loader != nil {
+		if err := s.reloadConfig(); err != nil {
+			errs = append(errs, fmt.Errorf("configuration: %w", err))
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// reloadConfig reads the configuration again and applies the settings that can
+// change while running. It is all or nothing: a configuration that does not
+// validate changes nothing.
+func (s *Server) reloadConfig() error {
+	cfg, err := s.loader()
+	if err != nil {
+		return err
+	}
+	if err := Check(cfg); err != nil {
+		return err
+	}
+	pcfg, err := pipelineConfig(cfg)
+	if err != nil {
+		return err
+	}
+	if s.policy != nil {
+		if err := s.policy.SetPatterns(cfg.MITM.Passthrough); err != nil {
+			return fmt.Errorf("mitm.passthrough: %w", err)
+		}
+	}
+	if err := s.pipe.Reload(pcfg); err != nil {
+		return err
+	}
+	if s.level != nil {
+		var lv slog.Level
+		if err := lv.UnmarshalText([]byte(cfg.Log.Level)); err == nil {
+			s.level.Set(lv)
+		}
+	}
+	return nil
 }
 
 // Run serves until ctx is done, then shuts down gracefully: it stops
@@ -248,7 +358,21 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	defer s.auth.Close()
+	defer s.cache.Close()
 	defer s.pipe.Close()
+
+	var metricsSrv *http.Server
+	if s.registry != nil && s.cfg.Metrics.Addr != "" {
+		ln, err := net.Listen("tcp", s.cfg.Metrics.Addr)
+		if err != nil {
+			return fmt.Errorf("metrics: %w", err)
+		}
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", s.registry.Handler())
+		metricsSrv = &http.Server{Handler: mux, ReadHeaderTimeout: s.cfg.Server.ReadHeaderTimeout}
+		go func() { _ = metricsSrv.Serve(ln) }()
+		defer func() { _ = metricsSrv.Close() }()
+	}
 
 	errc := make(chan error, 2)
 	go func() { errc <- s.main.Serve(s.ln) }()
