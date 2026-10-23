@@ -64,7 +64,7 @@ func (o *observer) Observe(ob *proxy.Observation) {
 	out := &ob.Outcome
 	key := clientKey(ob.Client)
 	ev := stats.Event{
-		Time: ob.Time, Kind: out.Kind, Codec: out.Codec, Profile: out.Profile, Reason: out.Reason.String(),
+		Time: ob.Time, Kind: out.Kind, Codec: out.Codec, Profile: out.Profile, Reason: out.Reason.String(), Cause: out.Cause,
 		Transformed: out.Reason == pipeline.Transformed, BytesIn: out.BytesIn, BytesOut: out.BytesOut,
 		Duration: ob.Duration, ClientKey: key, Device: ob.Client.Device, Addr: ob.Client.Addr.String(),
 		UserAgent: ob.UserAgent, CacheHit: out.CacheHit,

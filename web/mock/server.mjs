@@ -162,6 +162,11 @@ export function startServer({
     state_dir: '/home/user/.midopress', proxy_addr: '127.0.0.1:9999', tls: true, mitm: true, auth_mode: 'token',
   }])
   route('GET', '/stats', () => [200, sim.snapshot()])
+  route('GET', '/stats/missed', ({ url }) => {
+    const q = url.searchParams
+    if (!q.get('reason')) return [422, { error: 'the reason is required', code: 'invalid', issues: [{ index: -1, field: 'reason', column: 0, message: 'a decision of the pipeline' }] }]
+    return [200, sim.missedByReason(q.get('reason'), Number(q.get('limit') || 20))]
+  })
   route('GET', '/settings', () => [200, { ...sim.settings }])
   route('PUT', '/settings', ({ body }) => {
     const issues = sim.applySettings(body)

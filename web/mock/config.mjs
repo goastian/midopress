@@ -8,26 +8,26 @@ const BUILTIN = {
   lossless: {
     lossless: true, target_dssim: 0, target_ssim: 1, target_ssimulacra2: 100, attempts: 1,
     formats: ['jxl', 'webp'], resize_to_viewport: false, photo_colors: 0, quantize_png: false,
-    animated_to_still: false, animated_quality: 100,
-    text: { brotli: 5, gzip: 6, zstd: 5, brotli_static: 11 },
+    animated_to_still: false, animated_quality: 100, avif_effort: 0, no_transform: 'respect', minify_js: false,
+    text: { brotli: 5, gzip: 6, zstd: 5, brotli_static: 11, static_wait_ms: 300 },
   },
   balanced: {
     lossless: false, target_dssim: 0.002, target_ssim: 0.99, target_ssimulacra2: 70, attempts: 5,
     formats: ['jxl', 'avif', 'webp'], resize_to_viewport: false, photo_colors: 4096, quantize_png: false,
-    animated_to_still: false, animated_quality: 70,
-    text: { brotli: 6, gzip: 6, zstd: 7, brotli_static: 11 },
+    animated_to_still: false, animated_quality: 70, avif_effort: 4, no_transform: 'respect', minify_js: false,
+    text: { brotli: 6, gzip: 6, zstd: 7, brotli_static: 10, static_wait_ms: 300 },
   },
   saver: {
     lossless: false, target_dssim: 0.006, target_ssim: 0.975, target_ssimulacra2: 55, attempts: 5,
     formats: ['avif', 'jxl', 'webp'], resize_to_viewport: true, photo_colors: 2048, quantize_png: true,
-    animated_to_still: false, animated_quality: 50,
-    text: { brotli: 9, gzip: 9, zstd: 12, brotli_static: 11 },
+    animated_to_still: false, animated_quality: 50, avif_effort: 5, no_transform: 'images', minify_js: true,
+    text: { brotli: 9, gzip: 9, zstd: 12, brotli_static: 11, static_wait_ms: 1000 },
   },
   extreme: {
     lossless: false, target_dssim: 0.015, target_ssim: 0.94, target_ssimulacra2: 40, attempts: 6,
     formats: ['avif', 'webp'], resize_to_viewport: true, photo_colors: 1024, quantize_png: true,
-    animated_to_still: true, animated_quality: 30,
-    text: { brotli: 11, gzip: 9, zstd: 19, brotli_static: 11 },
+    animated_to_still: true, animated_quality: 30, avif_effort: 5, no_transform: 'images', minify_js: true,
+    text: { brotli: 11, gzip: 9, zstd: 19, brotli_static: 11, static_wait_ms: 1500 },
   },
 }
 
@@ -38,7 +38,8 @@ const FORMATS = ['jxl', 'avif', 'webp']
 const MINIFY = ['off', 'safe', 'aggressive']
 const ACTIONS = ['', 'passthrough', 'passthrough_tls']
 const RULE_KEYS = ['match', 'action', 'profile', 'set']
-const SET_KEYS = ['minify_html', 'minify_css', 'minify_js', 'minify_svg', 'minify_json', 'images', 'text', 'quality']
+const SET_KEYS = ['minify_html', 'minify_css', 'minify_js', 'minify_svg', 'minify_json', 'images', 'text', 'quality', 'no_transform']
+const NO_TRANSFORM = ['respect', 'images', 'all']
 
 const issue = (index, field, message, column = 0) => ({ index, field, column, message })
 const isObj = (x) => x && typeof x === 'object' && !Array.isArray(x)
@@ -66,7 +67,7 @@ function checkOverride(o) {
   const out = []
   if (!isObj(o)) return [issue(-1, 'profile', 'the profile must be an object')]
   const allowed = ['base', 'target_dssim', 'target_ssim', 'target_ssimulacra2', 'attempts', 'formats',
-    'resize_to_viewport', 'photo_colors', 'quantize_png', 'animated_to_still', 'animated_quality', 'text']
+    'resize_to_viewport', 'photo_colors', 'quantize_png', 'animated_to_still', 'animated_quality', 'avif_effort', 'no_transform', 'minify_js', 'text']
   for (const k of Object.keys(o)) if (!allowed.includes(k)) out.push(issue(-1, k, `unknown field "${k}"`))
   const range = (k, lo, hi, int) => {
     if (o[k] === undefined) return
@@ -80,7 +81,9 @@ function checkOverride(o) {
   range('attempts', 1, 10, true)
   range('photo_colors', 0, 1 << 24, true)
   range('animated_quality', 1, 100, true)
-  for (const k of ['resize_to_viewport', 'quantize_png', 'animated_to_still']) {
+  range('avif_effort', 0, 10, true)
+  if (o.no_transform !== undefined && !NO_TRANSFORM.includes(o.no_transform)) out.push(issue(-1, 'no_transform', 'no_transform must be respect, images or all'))
+  for (const k of ['resize_to_viewport', 'quantize_png', 'animated_to_still', 'minify_js']) {
     if (o[k] !== undefined && typeof o[k] !== 'boolean') out.push(issue(-1, k, `${k} must be true or false`))
   }
   if (o.base !== undefined && !BUILTIN_NAMES.includes(o.base)) {
@@ -94,7 +97,7 @@ function checkOverride(o) {
   if (o.text !== undefined) {
     if (!isObj(o.text)) out.push(issue(-1, 'text', 'text must be an object'))
     else {
-      const lim = { brotli: [0, 11], gzip: [1, 9], zstd: [1, 22], brotli_static: [0, 11] }
+      const lim = { brotli: [0, 11], gzip: [1, 9], zstd: [1, 22], brotli_static: [0, 11], static_wait_ms: [0, 60000] }
       for (const [k, v] of Object.entries(o.text)) {
         if (!lim[k]) out.push(issue(-1, `text.${k}`, `unknown text level "${k}"`))
         else if (!Number.isInteger(v) || v < lim[k][0] || v > lim[k][1]) {
@@ -142,6 +145,8 @@ function checkRule(rule, i, profiles) {
           if (typeof v !== 'boolean' && !MINIFY.includes(v)) out.push(issue(i, f, `${k} must be off, safe, aggressive or a boolean`))
         } else if (k === 'quality') {
           if (!Number.isInteger(v) || v < 1 || v > 100) out.push(issue(i, f, 'quality must be an integer between 1 and 100'))
+        } else if (k === 'no_transform') {
+          if (!NO_TRANSFORM.includes(v)) out.push(issue(i, f, 'no_transform must be one of respect, images, all'))
         } else if (typeof v !== 'boolean') out.push(issue(i, f, `${k} must be true or false`))
       }
     }

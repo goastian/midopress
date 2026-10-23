@@ -14,19 +14,34 @@ const nStripes = 16
 // fold into "other".
 const maxLabels = 64
 
-var kindNames = [...]string{"image", "text", "font", "other"}
+// The kinds of content. Images, text and fonts are what the proxy can shrink;
+// media is video and audio, which it passes as they are.
+var kindNames = [...]string{"image", "text", "font", "media", "other"}
+
+const (
+	kindImage = iota
+	kindText
+	kindFont
+	kindMedia
+	kindOther
+)
 
 func kindIndex(k string) int {
 	switch k {
 	case "image":
-		return 0
+		return kindImage
 	case "text":
-		return 1
+		return kindText
 	case "font":
-		return 2
+		return kindFont
+	case "media":
+		return kindMedia
 	}
-	return 3
+	return kindOther
 }
+
+// compressible reports whether a kind is one the proxy can shrink.
+func compressible(ki int) bool { return ki <= kindFont }
 
 type cell struct {
 	requests    atomic.Uint64

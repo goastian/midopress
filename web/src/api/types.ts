@@ -75,6 +75,62 @@ export interface DomainStat extends Bucket {
   domain: string
 }
 
+/** What happened to the responses of one reason and one kind of content. */
+export interface ReasonStat {
+  /** "transformed" or why the response was left alone */
+  reason: string
+  kind: string
+  requests: number
+  bytes_in: number
+  bytes_out: number
+}
+
+/** A reason that needs more words: why the pipeline was busy, which media type is not handled, which status was left alone. */
+export interface CauseStat {
+  reason: string
+  /** for busy: memory-body, memory-pixels, memory-text, cpu; for type: the media type; for status: the code */
+  cause: string
+  requests: number
+  bytes_in: number
+}
+
+/** The responses of one host that were left alone for a reason, by kind of content. */
+export interface HostReason {
+  reason: string
+  kind: string
+  requests: number
+  bytes_in: number
+}
+
+/**
+ * A host and the bytes that were not saved for it. `missed_bytes` is images,
+ * text and fonts that were left alone; `media_bytes` is video and audio. The
+ * numbers are since the host was last admitted to the tracked set.
+ */
+export interface MissedStat extends Bucket {
+  domain: string
+  missed_bytes: number
+  media_bytes: number
+  /** why its responses were left alone, the heaviest first */
+  reasons: HostReason[]
+}
+
+/** A host and its responses that were left alone for one reason. */
+export interface ReasonHost {
+  domain: string
+  requests: number
+  bytes_in: number
+  kinds: HostReason[]
+}
+
+/** GET /stats/missed?reason=&limit= */
+export interface MissedByReason {
+  /** false while the aggregation of domains is off */
+  enabled: boolean
+  reason: string
+  hosts: ReasonHost[]
+}
+
 export interface SeriesPoint {
   /** unix seconds of the start of the interval */
   t: number
@@ -95,25 +151,31 @@ export interface StatsSnapshot {
   uptime_seconds: number
   version: string
   totals: Totals
-  /** image, text, font, other */
+  /** image, text, font, media (video and audio), other */
   by_kind: Record<string, Bucket>
   /** what was sent: avif, webp, jxl, jpeg, png, gif, br, zstd, gzip, deflate, woff2, identity */
   by_codec: Record<string, Bucket>
   by_profile: Record<string, Bucket>
   /** why a response was left alone, or "transformed": the names of the pipeline */
   by_decision: Record<string, number>
+  /** the decisions by kind of content, with bytes: the ones not transformed are the bytes that were not saved */
+  by_reason: ReasonStat[]
+  /** the decisions that need a cause: busy, type, status, method, no-transform */
+  by_cause: CauseStat[]
   latency: Latency
   cache: CacheStats
   connections: ConnectionStats
   cpu: CPUStats
   /** null while the aggregation of domains is off */
   top_domains: DomainStat[] | null
+  /** the hosts with the most bytes of images, text and fonts that were left alone; null while the aggregation of domains is off */
+  top_missed: MissedStat[] | null
   series: Series
 }
 
 // ---------------------------------------------------------------- flows
 
-export type Kind = 'image' | 'text' | 'font' | 'other'
+export type Kind = 'image' | 'text' | 'font' | 'media' | 'other'
 
 export interface ClientRef {
   /** id of the device when the proxy uses tokens, empty otherwise */
@@ -248,7 +310,12 @@ export interface ProfileOverride {
   quantize_png?: boolean
   animated_to_still?: boolean
   animated_quality?: number
-  text?: { brotli?: number; gzip?: number; zstd?: number; brotli_static?: number }
+  /** 1 to 10, how hard AVIF is tried; 0 lets the engine choose. WebAssembly never goes above 2 */
+  avif_effort?: number
+  /** respect, images or all: what to do with a response that says Cache-Control: no-transform */
+  no_transform?: string
+  minify_js?: boolean
+  text?: { brotli?: number; gzip?: number; zstd?: number; brotli_static?: number; static_wait_ms?: number }
 }
 
 /** A profile as it works, with every value filled in. */
@@ -268,7 +335,12 @@ export interface ProfileInfo {
   quantize_png: boolean
   animated_to_still: boolean
   animated_quality: number
-  text: { brotli: number; gzip: number; zstd: number; brotli_static: number }
+  /** 0 when the engine chooses */
+  avif_effort: number
+  /** respect, images or all */
+  no_transform: string
+  minify_js: boolean
+  text: { brotli: number; gzip: number; zstd: number; brotli_static: number; static_wait_ms: number }
   /** the override that makes it, empty for an untouched built-in */
   override: ProfileOverride
 }

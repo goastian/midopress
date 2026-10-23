@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/goastian/midopress/internal/img"
@@ -43,6 +44,29 @@ func (s *Server) snapshot() StatsSnapshot {
 
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.snapshot())
+}
+
+// handleMissed lists the hosts that had responses left alone for a reason, so
+// that "368 responses left by no-transform" can be told apart by host. It needs
+// the aggregation of domains to be on.
+func (s *Server) handleMissed(w http.ResponseWriter, r *http.Request) {
+	reason := r.URL.Query().Get("reason")
+	if reason == "" {
+		writeInvalid(w, "the reason is required", []Issue{{Index: -1, Field: "reason", Message: "a decision of the pipeline, such as no-transform or busy"}})
+		return
+	}
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 500 {
+			writeInvalid(w, "the limit must be between 1 and 500", []Issue{{Index: -1, Field: "limit", Message: "1 to 500"}})
+			return
+		}
+		limit = n
+	}
+	writeJSON(w, http.StatusOK, missedByReason{
+		Enabled: s.d.Collector.Domains(), Reason: reason, Hosts: s.d.Collector.MissedByReason(reason, limit),
+	})
 }
 
 func (s *Server) handleAbout(w http.ResponseWriter, _ *http.Request) {

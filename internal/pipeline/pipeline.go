@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,6 +74,14 @@ func (r Reason) String() string {
 // NumReasons is the number of distinct reasons, for sizing counters.
 const NumReasons = int(numReasons)
 
+// Causes of PassBusy: what was exhausted.
+const (
+	CauseMemoryBody   = "memory-body"   // the memory budget could not hold the body of an image
+	CauseMemoryPixels = "memory-pixels" // ... or the pixels of the decoded picture
+	CauseMemoryText   = "memory-text"   // ... or the buffers of a text response
+	CauseCPU          = "cpu"           // no CPU slot became free in time
+)
+
 // TextConfig tunes the compression of text like content.
 type TextConfig struct {
 	Minify     textmin.Config // what to minify, and how far
@@ -88,11 +97,19 @@ type ImageConfig struct {
 	JPEGQuality int  // 1 to 100 fixes the quality, 0 finds it for each image
 	PNG         bool
 	GIF         bool
-	MinBytes    int64
-	MaxBytes    int64
-	MaxPixels   int64
-	Timeout     time.Duration // longest a request waits for a recoded image
-	Metric      string        // dssim, ssim or ssimulacra2
+	// Modern recodes the WebP and AVIF pictures that sites already send.
+	Modern bool
+	// PageHints reads the HTML that goes by to learn how wide the page shows
+	// each image, for the profiles that resize, and which files have an
+	// integrity hash, which are never minified.
+	PageHints bool
+	// HintDPR is the pixel density assumed for those widths, 2 when 0.
+	HintDPR   float64
+	MinBytes  int64
+	MaxBytes  int64
+	MaxPixels int64
+	Timeout   time.Duration // longest a request waits for a recoded image
+	Metric    string        // dssim, ssim or ssimulacra2
 	// Background finishes, after the response went out, the images that did
 	// not fit in Timeout, so that the next request finds them in the cache.
 	Background        bool
@@ -108,6 +125,10 @@ type Config struct {
 	TranscodeWait time.Duration // how long to wait for a free slot before passing the response through
 	MemoryBudget  int64         // bytes the pipeline may hold in buffers at the same time
 	Profile       string        // default profile
+	// NoTransform is what to do with a response that says Cache-Control:
+	// no-transform: respect, images or all. Empty or "profile" leaves it to the
+	// profile of the request, which respects it unless it says otherwise.
+	NoTransform string
 	// Profiles are the profiles available, nil for the built-in ones.
 	Profiles map[string]*img.Profile
 	Levels   codec.Levels // text levels that replace the ones of the profile, when not zero
@@ -144,6 +165,9 @@ func DefaultConfig() Config {
 			JPEG:              true,
 			PNG:               true,
 			GIF:               true,
+			Modern:            true,
+			PageHints:         true,
+			HintDPR:           2,
 			MinBytes:          1024,
 			MaxBytes:          8 << 20,
 			MaxPixels:         16_000_000,
@@ -168,7 +192,10 @@ type Pipeline struct {
 	warm   sync.WaitGroup
 	sem    chan struct{}
 	mem    *semaphore.Weighted
-	inst   atomic.Pointer[instruments]
+	// memUsed is what is reserved of the budget now, for the gauge.
+	memUsed atomic.Int64
+	inst    atomic.Pointer[instruments]
+	pages   *pageHints
 
 	capture atomic.Bool
 
@@ -240,6 +267,7 @@ func New(cfg Config) *Pipeline {
 		cache:  cfg.Cache,
 		sem:    make(chan struct{}, cfg.MaxConcurrent),
 		mem:    semaphore.NewWeighted(cfg.MemoryBudget),
+		pages:  newPageHints(),
 	}
 	p.engine.Metric = metric
 	p.engine.OnEncode = p.observeEncode
@@ -372,15 +400,22 @@ type Outcome struct {
 
 	// What follows describes the response for the people who watch the proxy:
 	// the administration interface and the statistics.
-	Kind        string // image, text, font or other
+	Kind        string // image, text, font, media or other
 	ContentType string // of the response of the origin
-	OutType     string // of what was sent, when it is not the same
-	Codec       string // avif, webp, jxl, jpeg, png, gif, br, zstd, gzip, deflate, woff2 or identity
-	Profile     string
-	CacheHit    bool
-	Metric      string  // the measure that was used for an image, and what it reached
-	Measure     float64 //
-	Minified    bool
+	// IgnoredNoTransform is set when the response said no-transform and was
+	// transformed anyway, because the profile or the configuration allows it.
+	IgnoredNoTransform bool
+	// Cause refines Reason when that is not enough to act on: why the response
+	// was busy (see the Cause constants) or, for a type that is not handled,
+	// the media type.
+	Cause    string
+	OutType  string // of what was sent, when it is not the same
+	Codec    string // avif, webp, jxl, jpeg, png, gif, br, zstd, gzip, deflate, woff2 or identity
+	Profile  string
+	CacheHit bool
+	Metric   string  // the measure that was used for an image, and what it reached
+	Measure  float64 //
+	Minified bool
 	// Original and Result are the bodies of an image, kept only while capture
 	// is on. They are shared with the cache: do not change them.
 	Original []byte
@@ -425,8 +460,26 @@ func kindName(mt string) string {
 		return "image"
 	case kindOf(mt) == kindText:
 		return "text"
+	case isMedia(mt):
+		return "media"
 	}
 	return "other"
+}
+
+// isMedia reports whether a media type is video or audio, or the container a
+// streaming service wraps them in: HLS playlists and the UMP stream of YouTube.
+// A DASH manifest is XML, so it counts as text. These are the bytes that dominate mobile traffic and that no
+// recompression here touches.
+func isMedia(mt string) bool {
+	if strings.HasPrefix(mt, "video/") || strings.HasPrefix(mt, "audio/") {
+		return true
+	}
+	switch mt {
+	case "application/vnd.yt-ump", "application/vnd.apple.mpegurl", "application/x-mpegurl",
+		"application/mp4", "application/ogg":
+		return true
+	}
+	return false
 }
 
 type kind uint8
@@ -440,7 +493,9 @@ const (
 func (p *Pipeline) handle(w http.ResponseWriter, req *http.Request, resp *http.Response) Outcome {
 	k, mt, reason := p.classify(req, resp)
 	if k == kindNone {
-		return p.passthrough(w, resp, reason)
+		out := p.passthrough(w, resp, reason)
+		out.Cause = classifyCause(req, resp, reason, mt)
+		return out
 	}
 	lv := p.live.Load()
 	var dec rules.Decision
@@ -454,6 +509,22 @@ func (p *Pipeline) handle(w http.ResponseWriter, req *http.Request, resp *http.R
 	if err != nil {
 		return p.passthrough(w, resp, PassError)
 	}
+	overrode := false
+	if reason == PassNoTransform {
+		if !fl.mayIgnoreNoTransform(k) {
+			out := p.passthrough(w, resp, PassNoTransform)
+			out.Cause = classifyCause(req, resp, PassNoTransform, mt)
+			return out
+		}
+		overrode = true
+	}
+	out := p.transform(w, req, resp, mt, k, fl, reason)
+	out.IgnoredNoTransform = overrode && out.Reason == Transformed
+	return out
+}
+
+// transform runs the pipeline of a kind of content.
+func (p *Pipeline) transform(w http.ResponseWriter, req *http.Request, resp *http.Response, mt string, k kind, fl *flow, reason Reason) Outcome {
 	switch k {
 	case kindText:
 		if !fl.opts.text {
@@ -481,10 +552,13 @@ func (p *Pipeline) classify(req *http.Request, resp *http.Response) (kind, strin
 	if req.Header.Get("Range") != "" || h.Get("Content-Range") != "" {
 		return kindNone, "", PassRange
 	}
-	if httpx.HeaderHasDirective(h, "Cache-Control", "no-transform") ||
-		httpx.HeaderHasDirective(req.Header, "Cache-Control", "no-transform") {
+	// A client that says no-transform means it. A response that says it can be
+	// overridden by what the person chose (see flow.mayIgnoreNoTransform), which
+	// is only known once the profile is, so it is carried to handle.
+	if httpx.HeaderHasDirective(req.Header, "Cache-Control", "no-transform") {
 		return kindNone, "", PassNoTransform
 	}
+	forbidden := httpx.HeaderHasDirective(h, "Cache-Control", "no-transform")
 	mt := httpx.MediaType(h)
 	if mt == "text/event-stream" || mt == "multipart/x-mixed-replace" {
 		return kindNone, mt, PassStream
@@ -492,16 +566,49 @@ func (p *Pipeline) classify(req *http.Request, resp *http.Response) (kind, strin
 	if resp.ContentLength == 0 {
 		return kindNone, mt, PassTooSmall
 	}
+	reason := Transformed
+	if forbidden {
+		reason = PassNoTransform
+	}
 	switch k := kindOf(mt); k {
 	case kindImage:
 		if req.Method != http.MethodGet {
 			return kindNone, mt, PassMethod
 		}
-		return k, mt, Transformed
+		return k, mt, reason
 	case kindText:
-		return k, mt, Transformed
+		return k, mt, reason
+	}
+	if forbidden {
+		return kindNone, mt, PassNoTransform
 	}
 	return kindNone, mt, PassType
+}
+
+// classifyCause says more about why classify left a response alone: the media
+// type that is not handled, the status, the method, or which side forbade the
+// transformation.
+func classifyCause(req *http.Request, resp *http.Response, reason Reason, mt string) string {
+	switch reason {
+	case PassType:
+		if mt == "" {
+			return "none"
+		}
+		if len(mt) > 64 {
+			mt = mt[:64]
+		}
+		return mt
+	case PassStatus:
+		return strconv.Itoa(resp.StatusCode)
+	case PassMethod:
+		return req.Method
+	case PassNoTransform:
+		if httpx.HeaderHasDirective(req.Header, "Cache-Control", "no-transform") {
+			return "request"
+		}
+		return "response"
+	}
+	return ""
 }
 
 func kindOf(mt string) kind {
@@ -509,7 +616,7 @@ func kindOf(mt string) kind {
 		return kindText
 	}
 	switch mt {
-	case "image/jpeg", "image/jpg", "image/png", "image/gif":
+	case "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp", "image/avif", "image/jxl":
 		return kindImage
 	case "application/json", "application/javascript", "application/x-javascript",
 		"application/ecmascript", "application/xml", "application/wasm",

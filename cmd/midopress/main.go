@@ -271,6 +271,8 @@ func cmdServe(args []string, stdout, stderr io.Writer, environ []string) int {
 		"mitm", cfg.MITM.Enabled(),
 		"auth", cfg.Auth.Mode,
 		"block_global", cfg.Auth.BlockGlobal,
+		"memory_budget", server.MemoryBudget(cfg.Pipeline.MemoryBudget),
+		"image_backend", cfg.Pipeline.Image.Backend,
 	)
 	if err := srv.Run(ctx); err != nil {
 		log.Error("server stopped", "err", err)

@@ -47,7 +47,7 @@ export function check(v, s, at = '$') {
 
 const Bucket = obj({ requests: num, transformed: num, bytes_in: num, bytes_out: num })
 const SeriesPoint = obj({ t: num, requests: num, bytes_in: num, bytes_out: num })
-const Kind = lit('image', 'text', 'font', 'other')
+const Kind = lit('image', 'text', 'font', 'media', 'other')
 const Strs = arr(str)
 const Headers = or(nul, rec(Strs))
 
@@ -55,12 +55,23 @@ export const StatsSnapshot = obj({
   time: str, uptime_seconds: num, version: str,
   totals: obj({ requests: num, transformed: num, bytes_in: num, bytes_out: num, saved: num, saved_percent: num }),
   by_kind: rec(Bucket), by_codec: rec(Bucket), by_profile: rec(Bucket), by_decision: rec(num),
+  by_reason: arr(obj({ reason: str, kind: str, requests: num, bytes_in: num, bytes_out: num })),
+  by_cause: arr(obj({ reason: str, cause: str, requests: num, bytes_in: num })),
   latency: obj({ p50_ms: num, p95_ms: num, p99_ms: num, samples: num }),
   cache: obj({ hits: num, misses: num, hit_rate: num, memory_bytes: num, memory_items: num, disk_bytes: num, disk_items: num, evictions: num, expired: num, disk_errors: num }),
-  connections: obj({ clients_active: num, requests_in_flight: num, tunnels_active: num, tunnels_total: num, tls_handshakes: num, tls_handshake_errors: num, upstream_errors: num, denied: num }),
+  connections: obj({ clients_active: num, requests_in_flight: num, tunnels_active: num, tunnels_total: num, tunnel_bytes_up: num, tunnel_bytes_down: num, tls_handshakes: num, tls_handshake_errors: num, upstream_errors: num, denied: num }),
   cpu: obj({ slots: num, busy: num, background_queue: num }),
   top_domains: or(nul, arr(obj({ domain: str, requests: num, transformed: num, bytes_in: num, bytes_out: num }))),
+  top_missed: or(nul, arr(obj({
+    domain: str, requests: num, transformed: num, bytes_in: num, bytes_out: num, missed_bytes: num, media_bytes: num,
+    reasons: arr(obj({ reason: str, kind: str, requests: num, bytes_in: num })),
+  }))),
   series: obj({ seconds: arr(SeriesPoint), minutes: arr(SeriesPoint) }),
+})
+
+export const MissedByReason = obj({
+  enabled: bool, reason: str,
+  hosts: arr(obj({ domain: str, requests: num, bytes_in: num, kinds: arr(obj({ reason: str, kind: str, requests: num, bytes_in: num })) })),
 })
 
 export const Flow = obj({
@@ -83,11 +94,11 @@ export const Client = obj({
 })
 export const NewDevice = obj({ id: str, profile: str, token: str, config_url: str, config_qr_svg: str })
 
-const Text = obj({ brotli: num, gzip: num, zstd: num, brotli_static: num })
+const Text = obj({ brotli: num, gzip: num, zstd: num, brotli_static: num, static_wait_ms: num })
 export const ProfileInfo = obj({
   name: str, builtin: bool, modified: bool, lossless: bool, target_dssim: num, target_ssim: num, target_ssimulacra2: num,
   attempts: num, formats: Strs, resize_to_viewport: bool, photo_colors: num, quantize_png: bool, animated_to_still: bool,
-  animated_quality: num, text: Text, override: rec('any'),
+  animated_quality: num, avif_effort: num, no_transform: str, minify_js: bool, text: Text, override: rec('any'),
 })
 const Rule = obj({ match: str, action: lit('', 'passthrough', 'passthrough_tls'), profile: str, set: rec(or(str, num, bool)) }, ['action', 'profile', 'set'])
 export const ConfigView = obj({

@@ -14,6 +14,8 @@ func (p *Proxy) Instrument(reg *metrics.Registry) {
 	counter("midopress_aborted_total", "Responses cut because the origin failed after they started.", func(s Stats) float64 { return float64(s.Aborted) })
 	counter("midopress_denied_total", "Requests refused by authentication or access control.", func(s Stats) float64 { return float64(s.Denied) })
 	counter("midopress_tunnels_total", "CONNECT tunnels opened.", func(s Stats) float64 { return float64(s.Tunnels) })
+	counter("midopress_tunnel_up_bytes_total", "Bytes that clients sent into tunnels that are not decrypted. The proxy does not look inside them.", func(s Stats) float64 { return float64(s.TunnelBytesUp) })
+	counter("midopress_tunnel_down_bytes_total", "Bytes that tunnels that are not decrypted brought to clients. The proxy does not look inside them, so none of it is shrunk.", func(s Stats) float64 { return float64(s.TunnelBytesDown) })
 	counter("midopress_tls_handshakes_total", "TLS handshakes with clients of intercepted tunnels.", func(s Stats) float64 { return float64(s.TLSHandshakes) })
 	counter("midopress_tls_handshake_errors_total", "Failed handshakes of intercepted tunnels.", func(s Stats) float64 { return float64(s.TLSHandshakeErrs) })
 	counter("midopress_auto_passthrough_total", "Hosts passed through from then on because the client rejected our certificate.", func(s Stats) float64 { return float64(s.AutoPassthrough) })

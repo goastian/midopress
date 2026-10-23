@@ -409,3 +409,35 @@ func (f fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Ad
 	}
 	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 }
+
+func TestTunnelBytesAreCountedWhileOpen(t *testing.T) {
+	h := newHarness(t, withoutMITM())
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+		_, _ = io.Copy(c, c) // echoes as it goes and never ends by itself
+	}()
+	h.routes.Store("live.test:7001", ln.Addr().String())
+
+	conn := h.rawConn()
+	br := connect(t, conn, "live.test:7001")
+	_, err = io.WriteString(conn, "0123456789")
+	require.NoError(t, err)
+	buf := make([]byte, 10)
+	_, err = io.ReadFull(br, buf)
+	require.NoError(t, err)
+
+	st := h.srv.Proxy().Stats()
+	assert.Equal(t, int64(1), st.TunnelsActive, "the tunnel is still open")
+	assert.Eventually(t, func() bool {
+		st := h.srv.Proxy().Stats()
+		return st.TunnelBytesUp == 10 && st.TunnelBytesDown == 10
+	}, 2*time.Second, 10*time.Millisecond, "an open tunnel is already in the byte counters")
+	_ = conn.Close()
+}

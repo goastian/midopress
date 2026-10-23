@@ -27,6 +27,7 @@ import (
 	"github.com/goastian/midopress/internal/proxy"
 	"github.com/goastian/midopress/internal/rules"
 	"github.com/goastian/midopress/internal/stats"
+	"github.com/goastian/midopress/internal/sysmem"
 	"github.com/goastian/midopress/internal/textmin"
 	"github.com/goastian/midopress/internal/upstream"
 	"github.com/goastian/midopress/internal/xcache"
@@ -274,6 +275,17 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 	return s, nil
 }
 
+// MemoryBudget is the budget of the pipeline for a configured size: the size
+// itself, or, when it is 0, a quarter of the memory of the machine or container
+// within 256 MiB and 8 GiB. A picture takes 80 to 190 bytes per pixel while it is
+// recoded, so the budget decides how many big ones are recoded at once.
+func MemoryBudget(configured config.ByteSize) int64 {
+	if configured > 0 {
+		return int64(configured)
+	}
+	return sysmem.Budget(sysmem.Total(), 256<<20, 8<<30)
+}
+
 func pipelineConfig(cfg *config.Config) (pipeline.Config, error) {
 	p := cfg.Pipeline
 	profiles, err := img.BuildProfiles(cfg.Profiles)
@@ -293,8 +305,9 @@ func pipelineConfig(cfg *config.Config) (pipeline.Config, error) {
 		MinGain:       p.MinGain,
 		MaxConcurrent: p.MaxConcurrentTranscodes,
 		TranscodeWait: p.TranscodeWait,
-		MemoryBudget:  int64(p.MemoryBudget),
+		MemoryBudget:  MemoryBudget(p.MemoryBudget),
 		Profile:       p.Profile,
+		NoTransform:   p.NoTransform,
 		Profiles:      profiles,
 		Rules:         rs,
 		TTL:           pipeline.TTLConfig{Min: cfg.Cache.MinTTL, Max: cfg.Cache.MaxTTL, Default: cfg.Cache.DefaultTTL},
@@ -314,6 +327,9 @@ func pipelineConfig(cfg *config.Config) (pipeline.Config, error) {
 			JPEGQuality:       p.Image.JPEGQuality,
 			PNG:               p.Image.PNG,
 			GIF:               p.Image.GIF,
+			Modern:            p.Image.Modern,
+			PageHints:         p.Image.PageHints,
+			HintDPR:           p.Image.HintDPR,
 			MinBytes:          int64(p.Image.MinBytes),
 			MaxBytes:          int64(p.Image.MaxBytes),
 			MaxPixels:         p.Image.MaxPixels,

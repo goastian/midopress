@@ -54,6 +54,16 @@ test('signing in with the link and seeing the traffic on the dashboard', async (
     await expect(page.getByText('Throughput')).toBeVisible()
     await expect(page.getByText('By kind')).toBeVisible()
     await expect(page.locator('main')).toContainText('text')
+
+    // the headline is what can be shrunk; video and what is never opened are apart
+    await expect(page.getByText('of images, text and fonts')).toBeVisible()
+    await expect(page.getByText('Video and audio')).toBeVisible()
+    await expect(page.getByText('Not inspected')).toBeVisible()
+    // and the bytes that were not saved have a reason and, with tracking on, a host
+    await expect(page.getByRole('heading', { name: 'Left alone' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Causes' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Where bytes were not saved' })).toBeVisible()
+    await expect(page.locator('main')).not.toContainText('unknown')
   } finally {
     origin.close()
   }

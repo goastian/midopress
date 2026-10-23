@@ -141,7 +141,7 @@ func TestBudgetFallsBackAndFinishesInTheBackground(t *testing.T) {
 func TestBackgroundOff(t *testing.T) {
 	p := newPipeline(func(c *Config) { c.Image.Background = false })
 	assert.False(t, p.bg.enabled())
-	p.bg.submit("k", img.Input{}, time.Time{})
+	p.bg.submit("k", img.Input{}, time.Time{}, 0)
 	assert.Empty(t, p.bg.inflight)
 }
 

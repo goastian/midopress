@@ -110,11 +110,24 @@ func (s *tunnelSet) tunnel(client, upstream net.Conn) {
 	wg.Wait()
 }
 
+// countingWriter adds what it writes to a counter.
+type countingWriter struct {
+	w io.Writer
+	n *atomic.Uint64
+}
+
+func (c countingWriter) Write(b []byte) (int, error) {
+	n, err := c.w.Write(b)
+	c.n.Add(uint64(n))
+	return n, err
+}
+
 // pump copies src to dst, then passes the end of the stream on to dst.
 func pump(dst, src net.Conn, count *atomic.Uint64) {
 	bp := tunnelBuffers.Get().(*[]byte)
-	n, err := io.CopyBuffer(dst, src, *bp)
-	count.Add(uint64(n))
+	// counted as it goes: a tunnel can stay open for hours, and the bytes of
+	// one that is still open belong in the statistics
+	_, err := io.CopyBuffer(countingWriter{dst, count}, src, *bp)
 	tunnelBuffers.Put(bp)
 	if err != nil {
 		_ = dst.Close()

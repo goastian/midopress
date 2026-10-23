@@ -27,6 +27,9 @@ type live struct {
 	min    *textmin.Minifier
 	rules  *rules.RuleSet
 	ttl    TTLConfig
+	// noTransform is what the configuration says about Cache-Control:
+	// no-transform; empty leaves it to each profile.
+	noTransform string
 
 	mins sync.Map // textmin.Config -> *textmin.Minifier, for rules that change it
 }
@@ -47,6 +50,9 @@ func newLive(cfg *Config) (*live, error) {
 		min:      textmin.New(cfg.Text.Minify),
 		rules:    cfg.Rules,
 		ttl:      cfg.TTL,
+	}
+	if cfg.NoTransform != "profile" {
+		lv.noTransform = cfg.NoTransform
 	}
 	for name, prof := range profiles {
 		l := codec.Levels{Brotli: prof.Text.Brotli, Gzip: prof.Text.Gzip, Zstd: prof.Text.Zstd}
@@ -157,12 +163,35 @@ type options struct {
 	images  bool
 	text    bool
 	quality int // 0 leaves it to the request header and the configuration
+	// noTransform is respect, images or all, resolved from the rule, the
+	// configuration and the profile, in that order.
+	noTransform string
+}
+
+// mayIgnoreNoTransform reports whether a response of this kind that says
+// no-transform may be transformed anyway. Only images are ever concerned by
+// "images"; "all" adds text. Ranges are excluded before this is asked, and
+// fonts and SVG, which are text, are left to "all".
+func (f *flow) mayIgnoreNoTransform(k kind) bool {
+	switch f.opts.noTransform {
+	case img.NoTransformImages:
+		return k == kindImage
+	case img.NoTransformAll:
+		return k == kindImage || k == kindText
+	}
+	return false
 }
 
 func (lv *live) newFlow(req *http.Request, dec rules.Decision) (*flow, error) {
 	cl := ClientFrom(req.Context())
 	f := &flow{lv: lv, client: cl, prof: lv.pick(cl, req.Header, dec.Profile)}
-	f.opts = options{minify: lv.minify, images: true, text: true}
+	f.opts = options{minify: lv.minify, images: true, text: true, noTransform: f.prof.NoTransform}
+	if f.prof.MinifyJS && f.opts.minify.JS == textmin.Off {
+		f.opts.minify.JS = textmin.Safe
+	}
+	if lv.noTransform != "" {
+		f.opts.noTransform = lv.noTransform
+	}
 	var errs []string
 	for k, v := range dec.Set {
 		mode := func() (textmin.Mode, bool) {
@@ -213,6 +242,13 @@ func (lv *live) newFlow(req *http.Request, dec rules.Decision) (*flow, error) {
 				continue
 			}
 			f.opts.text = b
+		case "no_transform":
+			m, ok := v.(string)
+			if !ok || (m != img.NoTransformRespect && m != img.NoTransformImages && m != img.NoTransformAll) {
+				errs = append(errs, k)
+				continue
+			}
+			f.opts.noTransform = m
 		case "quality":
 			n, ok := v.(int)
 			if !ok || n < 1 || n > 100 {

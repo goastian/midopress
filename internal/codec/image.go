@@ -7,6 +7,8 @@ import (
 	stdgif "image/gif"
 	stdjpeg "image/jpeg"
 	"image/png"
+
+	"github.com/goastian/midopress/internal/imgmeta"
 )
 
 // ImageKind is an image format the proxy can recode.
@@ -17,6 +19,9 @@ const (
 	KindJPEG
 	KindPNG
 	KindGIF
+	KindWebP
+	KindAVIF
+	KindJXL
 )
 
 // SniffImage identifies the format from the magic number.
@@ -28,6 +33,14 @@ func SniffImage(b []byte) ImageKind {
 		return KindPNG
 	case len(b) >= 6 && (string(b[:6]) == "GIF87a" || string(b[:6]) == "GIF89a"):
 		return KindGIF
+	case len(b) >= 12 && string(b[:4]) == "RIFF" && string(b[8:12]) == "WEBP":
+		return KindWebP
+	case len(b) >= 12 && string(b[4:8]) == "ftyp" && (string(b[8:12]) == "avif" || string(b[8:12]) == "avis"):
+		return KindAVIF
+	case len(b) >= 2 && b[0] == 0xFF && b[1] == 0x0A:
+		return KindJXL
+	case len(b) >= 12 && string(b[:12]) == "\x00\x00\x00\x0cJXL \x0d\x0a\x87\x0a":
+		return KindJXL
 	}
 	return KindUnknown
 }
@@ -43,6 +56,21 @@ func ImageSize(kind ImageKind, raw []byte) (width, height int, err error) {
 		cfg, err = png.DecodeConfig(r)
 	case KindGIF:
 		cfg, err = stdgif.DecodeConfig(r)
+	case KindWebP:
+		var w *imgmeta.WebP
+		if w, err = imgmeta.ParseWebP(raw); err == nil {
+			cfg.Width, cfg.Height = w.Width, w.Height
+		}
+	case KindAVIF:
+		var a *imgmeta.AVIF
+		if a, err = imgmeta.ParseAVIF(raw); err == nil {
+			cfg.Width, cfg.Height = a.Width, a.Height
+		}
+	case KindJXL:
+		var j *imgmeta.JXL
+		if j, err = imgmeta.ParseJXL(raw); err == nil {
+			cfg.Width, cfg.Height = j.Width, j.Height
+		}
 	default:
 		err = errors.New("codec: unknown image format")
 	}

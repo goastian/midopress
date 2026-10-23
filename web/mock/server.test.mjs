@@ -362,9 +362,30 @@ test('top domains appear with the setting and add up', async () => {
   assert.equal(s.totals.requests, 600)
   assert.equal(s.series.seconds.reduce((a, p) => a + p.requests, 0), 600)
   assert.ok(s.totals.saved > 0 && s.latency.samples > 0)
-  assert.equal(s.by_kind.image.requests + s.by_kind.text.requests + s.by_kind.font.requests + s.by_kind.other.requests, 600)
+  assert.equal(s.by_kind.image.requests + s.by_kind.text.requests + s.by_kind.font.requests + s.by_kind.media.requests + s.by_kind.other.requests, 600)
   await call('PUT', api('/settings'), { domains: false })
   assert.equal(ok(await get(api('/stats')), 200).top_domains, null)
+})
+
+test('which hosts the bytes that were not saved came from', async () => {
+  await fresh()
+  await call('PUT', api('/settings'), { domains: true })
+  await call('POST', '/mock/burst', { requests: 800 }, { auth: false })
+  const s = ok(await get(api('/stats')), 200, S.StatsSnapshot)
+  assert.ok(s.by_reason.length > 3)
+  assert.ok(s.by_reason.every((r, i, a) => i === 0 || a[i - 1].bytes_in >= r.bytes_in))
+  assert.ok(s.top_missed.length > 0 && s.top_missed.length <= 10)
+  assert.ok(s.top_missed.every((m, i, a) => i === 0 || a[i - 1].missed_bytes >= m.missed_bytes))
+  const reason = s.by_reason.find((r) => r.reason !== 'transformed').reason
+  const m = ok(await get(api(`/stats/missed?reason=${reason}`)), 200, S.MissedByReason)
+  assert.equal(m.enabled, true)
+  assert.ok(m.hosts.length > 0)
+  assert.ok(m.hosts.every((h) => h.kinds.every((k) => k.reason === reason)))
+  ok(await get(api('/stats/missed')), 422)
+  await call('PUT', api('/settings'), { domains: false })
+  const off = ok(await get(api(`/stats/missed?reason=${reason}`)), 200, S.MissedByReason)
+  assert.deepEqual([off.enabled, off.hosts], [false, []])
+  assert.equal(ok(await get(api('/stats')), 200).top_missed, null)
 })
 
 test('mock controls: reset, burst, speed', async () => {

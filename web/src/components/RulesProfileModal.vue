@@ -9,9 +9,9 @@ const props = defineProps<{ profile: ProfileInfo | null; profiles: ProfileInfo[]
 const emit = defineEmits<{ close: []; saved: [cfg: ConfigView] }>()
 
 type NumKey =
-  | 'target_dssim' | 'target_ssim' | 'target_ssimulacra2' | 'attempts' | 'photo_colors' | 'animated_quality'
-type BoolKey = 'resize_to_viewport' | 'quantize_png' | 'animated_to_still'
-type TextKey = 'brotli' | 'gzip' | 'zstd' | 'brotli_static'
+  | 'target_dssim' | 'target_ssim' | 'target_ssimulacra2' | 'attempts' | 'photo_colors' | 'animated_quality' | 'avif_effort'
+type BoolKey = 'resize_to_viewport' | 'quantize_png' | 'animated_to_still' | 'minify_js'
+type TextKey = 'brotli' | 'gzip' | 'zstd' | 'brotli_static' | 'static_wait_ms'
 
 const isNew = props.profile === null
 const builtin = props.profile?.builtin ?? false
@@ -36,18 +36,22 @@ const numFields: { key: NumKey; label: string; step: number; hint: string }[] = 
   { key: 'attempts', label: 'attempts', step: 1, hint: '1 to 8 encodes tried per image' },
   { key: 'photo_colors', label: 'photo_colors', step: 1, hint: 'colours above which a PNG counts as a photo' },
   { key: 'animated_quality', label: 'animated_quality', step: 1, hint: '0 to 100, 0 keeps animations as they are' },
+  { key: 'avif_effort', label: 'avif_effort', step: 1, hint: '0 lets the engine choose, 1 fastest to 10 smallest AVIF files; WebAssembly never goes above 2' },
 ]
 const boolFields: { key: BoolKey; label: string }[] = [
   { key: 'resize_to_viewport', label: 'resize_to_viewport' },
   { key: 'quantize_png', label: 'quantize_png' },
   { key: 'animated_to_still', label: 'animated_to_still' },
+  { key: 'minify_js', label: 'minify_js' },
 ]
 const textFields: { key: TextKey; label: string; hint: string }[] = [
   { key: 'brotli', label: 'text.brotli', hint: '0 to 11' },
   { key: 'gzip', label: 'text.gzip', hint: '1 to 9' },
   { key: 'zstd', label: 'text.zstd', hint: '1 to 22' },
   { key: 'brotli_static', label: 'text.brotli_static', hint: '0 to 11, for cached copies' },
+  { key: 'static_wait_ms', label: 'text.static_wait_ms', hint: 'most a request waits for it, in milliseconds' },
 ]
+const noTransformChoices = ['respect', 'images', 'all']
 
 function setNum(key: NumKey, ev: Event) {
   const v = (ev.target as HTMLInputElement).value
@@ -66,6 +70,11 @@ function setText(key: TextKey, ev: Event) {
   else t[key] = Number(v)
   if (Object.keys(t).length) ov.text = t
   else delete ov.text
+}
+function setNoTransform(ev: Event) {
+  const v = (ev.target as HTMLSelectElement).value
+  if (v === '') delete ov.no_transform
+  else ov.no_transform = v
 }
 function boolValue(key: BoolKey) {
   return ov[key] === undefined ? '' : String(ov[key])
@@ -97,7 +106,7 @@ function takeIssues(e: unknown) {
   issues.value = {}
   general.value = ''
   if (e instanceof ApiFailure) {
-    const known = [...numFields.map((f) => f.key as string), ...boolFields.map((f) => f.key as string), 'formats', 'base', 'name', ...textFields.map((f) => 'text.' + f.key)]
+    const known = [...numFields.map((f) => f.key as string), ...boolFields.map((f) => f.key as string), 'formats', 'base', 'name', 'no_transform', ...textFields.map((f) => 'text.' + f.key)]
     for (const i of e.body.issues ?? []) {
       const msg = i.message.replace(/^profile "[^"]*":\s*/, '')
       const key = i.field === 'name' ? 'name' : msg.split(/[\s:]/)[0]
@@ -218,6 +227,18 @@ async function remove() {
                 <div v-if="issues[f.key]" class="error-text">{{ issues[f.key] }}</div>
               </td>
               <td class="mono muted">{{ effective(f.key) === 'true' ? 'on' : 'off' }}</td>
+            </tr>
+            <tr>
+              <td class="mono">no_transform</td>
+              <td>
+                <select class="select compact" :value="ov.no_transform ?? ''" aria-label="no_transform" @change="setNoTransform($event)">
+                  <option value="">{{ builtin ? 'built-in' : 'inherit' }}</option>
+                  <option v-for="c in noTransformChoices" :key="c" :value="c">{{ c }}</option>
+                </select>
+                <div v-if="issues.no_transform" class="error-text">{{ issues.no_transform }}</div>
+                <div v-else class="hint">Cache-Control: no-transform. respect keeps it, images recodes the images that say it, all adds text</div>
+              </td>
+              <td class="mono muted">{{ effective('no_transform') }}</td>
             </tr>
             <tr v-for="f in textFields" :key="f.key">
               <td class="mono">{{ f.label }}</td>

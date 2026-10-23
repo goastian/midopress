@@ -155,6 +155,7 @@ func newPipeline(mod ...func(*Config)) *Pipeline {
 	cfg.Image.Warmup = false
 	cfg.Image.Metric = "ssim"
 	cfg.Image.Timeout = time.Minute
+	cfg.MemoryBudget = 2 << 30 // the pictures of the tests are not the ones of a small machine
 	for _, m := range mod {
 		m(&cfg)
 	}
@@ -388,6 +389,7 @@ func TestTextFallbacks(t *testing.T) {
 		body := htmlBody(100)
 		rec, out := run(p, newReq("Accept-Encoding", "gzip"), newResp("text/html", body))
 		assert.Equal(t, PassBusy, out.Reason)
+		assert.Equal(t, CauseMemoryText, out.Cause)
 		assert.Equal(t, body, rec.Body.Bytes())
 	})
 }
@@ -665,6 +667,24 @@ func TestImageLoadShedding(t *testing.T) {
 		defer p.releaseCPU()
 		rec, out := run(p, newReq(), newResp("image/jpeg", jpg))
 		assert.Equal(t, PassBusy, out.Reason)
+		assert.Equal(t, CauseCPU, out.Cause, "the slots, not the memory, were what ran out")
+		assert.Equal(t, jpg, rec.Body.Bytes())
+	})
+
+	t.Run("memory for the body", func(t *testing.T) {
+		p := newPipeline(func(c *Config) { c.MemoryBudget = 1000 })
+		rec, out := run(p, newReq(), newResp("image/jpeg", jpg))
+		assert.Equal(t, PassBusy, out.Reason)
+		assert.Equal(t, CauseMemoryBody, out.Cause)
+		assert.Equal(t, jpg, rec.Body.Bytes())
+	})
+
+	t.Run("memory for the pixels", func(t *testing.T) {
+		// room for the body (twice its size) but not for 320x240 pixels
+		p := newPipeline(func(c *Config) { c.MemoryBudget = int64(len(jpg))*2 + 1000 })
+		rec, out := run(p, newReq(), newResp("image/jpeg", jpg))
+		assert.Equal(t, PassBusy, out.Reason)
+		assert.Equal(t, CauseMemoryPixels, out.Cause)
 		assert.Equal(t, jpg, rec.Body.Bytes())
 	})
 
@@ -833,4 +853,44 @@ func BenchmarkJPEG(b *testing.B) {
 			p.Handle(rec, req, newResp("image/jpeg", jpg))
 		}
 	})
+}
+
+func TestCausesOfWhatWasLeftAlone(t *testing.T) {
+	t.Run("a type that is not handled names its media type", func(t *testing.T) {
+		_, out := run(newPipeline(), newReq(), newResp("application/vnd.yt-ump", []byte("not text, not an image")))
+		assert.Equal(t, PassType, out.Reason)
+		assert.Equal(t, "application/vnd.yt-ump", out.Cause)
+		assert.Equal(t, "media", kindName(out.Cause))
+	})
+	t.Run("the status", func(t *testing.T) {
+		resp := newResp("text/html", htmlBody(100))
+		resp.StatusCode = 206
+		_, out := run(newPipeline(), newReq("Accept-Encoding", "gzip"), resp)
+		assert.Equal(t, PassStatus, out.Reason)
+		assert.Equal(t, "206", out.Cause)
+	})
+	t.Run("who forbade the transformation", func(t *testing.T) {
+		_, out := run(newPipeline(), newReq("Accept-Encoding", "gzip"),
+			newResp("text/html", htmlBody(100), withHeader("Cache-Control", "public, no-transform")))
+		assert.Equal(t, PassNoTransform, out.Reason)
+		assert.Equal(t, "response", out.Cause)
+		_, out = run(newPipeline(), newReq("Accept-Encoding", "gzip", "Cache-Control", "no-transform"), newResp("text/html", htmlBody(100)))
+		assert.Equal(t, "request", out.Cause)
+	})
+	t.Run("a transformed response has no cause", func(t *testing.T) {
+		_, out := run(newPipeline(), newReq("Accept-Encoding", "gzip"), newResp("text/html", htmlBody(2000)))
+		assert.Equal(t, Transformed, out.Reason)
+		assert.Empty(t, out.Cause)
+	})
+}
+
+func TestKinds(t *testing.T) {
+	for mt, want := range map[string]string{
+		"image/jpeg": "image", "image/png": "image", "text/html": "text", "application/json": "text",
+		"font/woff2": "font", "video/mp4": "media", "audio/mpeg": "media", "video/mp2t": "media",
+		"application/vnd.yt-ump": "media", "application/vnd.apple.mpegurl": "media", "application/dash+xml": "text",
+		"application/octet-stream": "other", "application/zip": "other", "": "other",
+	} {
+		assert.Equal(t, want, kindName(mt), mt)
+	}
 }

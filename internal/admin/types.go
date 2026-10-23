@@ -72,6 +72,12 @@ type StatsSnapshot struct {
 	CPU         cpuView         `json:"cpu"`
 }
 
+type missedByReason struct {
+	Enabled bool               `json:"enabled"`
+	Reason  string             `json:"reason"`
+	Hosts   []stats.ReasonHost `json:"hosts"`
+}
+
 type flowList struct {
 	Enabled  bool         `json:"enabled"`
 	Capacity int          `json:"capacity"`
@@ -125,6 +131,9 @@ type profileInfo struct {
 	QuantizePNG       bool                `json:"quantize_png"`
 	AnimatedToStill   bool                `json:"animated_to_still"`
 	AnimatedQuality   int                 `json:"animated_quality"`
+	AVIFEffort        int                 `json:"avif_effort"`
+	NoTransform       string              `json:"no_transform"`
+	MinifyJS          bool                `json:"minify_js"`
 	Text              textLevels          `json:"text"`
 	Override          img.ProfileOverride `json:"override"`
 }
@@ -134,6 +143,7 @@ type textLevels struct {
 	Gzip         int `json:"gzip"`
 	Zstd         int `json:"zstd"`
 	BrotliStatic int `json:"brotli_static"`
+	StaticWait   int `json:"static_wait_ms"`
 }
 
 type managedBy struct {

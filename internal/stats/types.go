@@ -6,14 +6,17 @@ import "time"
 type Event struct {
 	// Time of the response, zero means now.
 	Time time.Time
-	// Kind is image, text, font or other; anything else counts as other.
+	// Kind is image, text, font, media or other; anything else counts as other.
 	Kind string
 	// Codec is what was sent: avif, webp, jxl, jpeg, png, gif, br, zstd, gzip,
 	// deflate, woff2 or identity. Empty counts as identity.
 	Codec   string
 	Profile string
 	// Reason is "transformed" or why the response was left alone.
-	Reason      string
+	Reason string
+	// Cause refines Reason: why the pipeline was busy, the media type that is
+	// not handled, the status. Empty when there is nothing to add.
+	Cause       string
 	Transformed bool
 	BytesIn     int64
 	BytesOut    int64
@@ -59,6 +62,52 @@ type Latency struct {
 type DomainStat struct {
 	Domain string `json:"domain"`
 	Bucket
+}
+
+// ReasonStat is what happened for one reason and kind of content.
+type ReasonStat struct {
+	Reason   string `json:"reason"`
+	Kind     string `json:"kind"`
+	Requests uint64 `json:"requests"`
+	BytesIn  uint64 `json:"bytes_in"`
+	BytesOut uint64 `json:"bytes_out"`
+}
+
+// CauseStat is what happened for one reason and one cause of it.
+type CauseStat struct {
+	Reason   string `json:"reason"`
+	Cause    string `json:"cause"`
+	Requests uint64 `json:"requests"`
+	BytesIn  uint64 `json:"bytes_in"`
+}
+
+// MissedStat is a host and the bytes that were not saved for it. Missed counts
+// the images, text and fonts that were left alone; Media is video and audio.
+// The numbers cover what happened since the host was last admitted to the
+// tracked set, so they are lower bounds.
+type MissedStat struct {
+	Domain string `json:"domain"`
+	Missed uint64 `json:"missed_bytes"`
+	Media  uint64 `json:"media_bytes"`
+	Bucket
+	Reasons []HostReason `json:"reasons"`
+}
+
+// ReasonHost is a host and its responses that were left alone for one reason.
+type ReasonHost struct {
+	Domain   string       `json:"domain"`
+	Requests uint64       `json:"requests"`
+	BytesIn  uint64       `json:"bytes_in"`
+	Kinds    []HostReason `json:"kinds"`
+}
+
+// HostReason is the responses of one host that were left alone for a reason,
+// by kind of content.
+type HostReason struct {
+	Reason   string `json:"reason"`
+	Kind     string `json:"kind"`
+	Requests uint64 `json:"requests"`
+	BytesIn  uint64 `json:"bytes_in"`
 }
 
 // SeriesPoint is the traffic of one interval.
@@ -110,10 +159,19 @@ type Snapshot struct {
 	ByCodec    map[string]Bucket `json:"by_codec"`
 	ByProfile  map[string]Bucket `json:"by_profile"`
 	ByDecision map[string]uint64 `json:"by_decision"`
-	Latency    Latency           `json:"latency"`
+	// ByReason splits the decisions by kind of content and adds the bytes, so
+	// the ones that were not transformed are the bytes that were not saved.
+	ByReason []ReasonStat `json:"by_reason"`
+	// ByCause explains the reasons that need it: why the pipeline was busy,
+	// which media types are not handled, which statuses were left alone.
+	ByCause []CauseStat `json:"by_cause"`
+	Latency Latency     `json:"latency"`
 	// TopDomains is nil, and null in JSON, while the aggregation is off.
 	TopDomains *[]DomainStat `json:"top_domains"`
-	Series     Series        `json:"series"`
+	// TopMissed is the hosts with the most bytes of images, text and fonts that
+	// were left alone. Nil, and null in JSON, while the aggregation is off.
+	TopMissed *[]MissedStat `json:"top_missed"`
+	Series    Series        `json:"series"`
 }
 
 func newTotals(b Bucket) Totals {

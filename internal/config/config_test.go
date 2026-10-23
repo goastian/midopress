@@ -182,6 +182,10 @@ func TestValidate(t *testing.T) {
 		{"jpeg range", func(c *Config) { c.Pipeline.Image.JPEGQuality = 101 }, "jpeg_quality"},
 		{"min gain", func(c *Config) { c.Pipeline.MinGain = 0.95 }, "min_gain"},
 		{"budget", func(c *Config) { c.Pipeline.MemoryBudget = 1000 }, "memory_budget"},
+		{"no_transform", func(c *Config) { c.Pipeline.NoTransform = "sometimes" }, "pipeline.no_transform"},
+		{"no_transform empty", func(c *Config) { c.Pipeline.NoTransform = "" }, "pipeline.no_transform"},
+		{"hint_dpr low", func(c *Config) { c.Pipeline.Image.HintDPR = 0.5 }, "hint_dpr"},
+		{"hint_dpr high", func(c *Config) { c.Pipeline.Image.HintDPR = 9 }, "hint_dpr"},
 		{"decoded smaller than buffer", func(c *Config) { c.Pipeline.Text.MaxDecoded = 1024 }, "max_decoded"},
 		{"zero timeout", func(c *Config) { c.Server.IdleTimeout = 0 }, "server.idle_timeout"},
 		{"log level", func(c *Config) { c.Log.Level = "loud" }, "log.level"},
@@ -226,4 +230,47 @@ func TestExampleFileMatchesDefaults(t *testing.T) {
 	assert.NoError(t, cfg.Validate())
 	cfg.MITM.Passthrough = nil
 	assert.Equal(t, Default(), cfg)
+}
+
+func TestNewPipelineKeysAndTheirDefaults(t *testing.T) {
+	d := Default()
+	assert.Equal(t, "profile", d.Pipeline.NoTransform, "what the profile says")
+	assert.True(t, d.Pipeline.Image.Modern)
+	assert.True(t, d.Pipeline.Image.PageHints)
+	assert.InDelta(t, 2, d.Pipeline.Image.HintDPR, 0)
+	assert.Zero(t, d.Pipeline.MemoryBudget, "0 is automatic")
+	assert.NoError(t, d.Validate())
+
+	cfg, err := Load(writeFile(t, `
+pipeline:
+  no_transform: images
+  memory_budget: 0
+  image: {modern: false, page_hints: false, hint_dpr: 3}
+`), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "images", cfg.Pipeline.NoTransform)
+	assert.False(t, cfg.Pipeline.Image.Modern)
+	assert.False(t, cfg.Pipeline.Image.PageHints)
+	assert.InDelta(t, 3, cfg.Pipeline.Image.HintDPR, 0)
+	assert.NoError(t, cfg.Validate())
+
+	for _, mode := range []string{"profile", "respect", "images", "all"} {
+		c := Default()
+		c.Pipeline.NoTransform = mode
+		assert.NoError(t, c.Validate(), mode)
+	}
+	c := Default()
+	c.Pipeline.MemoryBudget = 1 << 20
+	assert.NoError(t, c.Validate(), "1MiB is the smallest explicit budget")
+}
+
+func TestRuleSetAcceptsNoTransform(t *testing.T) {
+	for _, v := range []string{"respect", "images", "all"} {
+		assert.NoError(t, ValidateSet(map[string]any{"no_transform": v}), v)
+	}
+	for _, v := range []any{"profile", "", "sometimes", true, 3} {
+		err := ValidateSet(map[string]any{"no_transform": v})
+		require.Error(t, err, "%v", v)
+		assert.Contains(t, err.Error(), "no_transform")
+	}
 }

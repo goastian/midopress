@@ -76,6 +76,7 @@ func cmdBench(args []string, stdout, stderr io.Writer) int {
 	metricName := fs.String("metric", "dssim", "metric that decides the quality: dssim, ssim or ssimulacra2")
 	backendName := fs.String("backend", "wasm", "image backend: wasm or vips (needs the vips build tag)")
 	dssimLimit := fs.Float64("dssim-limit", 0.002, "count the results whose measured dssim is at most this (needs -verify)")
+	effort := fs.Int("effort", 0, "how hard AVIF is tried, 1 to 10, to compare what the extra CPU buys; 0 is what the profile says")
 	passes := fs.Int("passes", 0, "instead of the engine, run the whole pipeline with its cache this many times over the images and report hit rate and latency")
 	verbose := fs.Bool("v", false, "print one line per image")
 	asJSON := fs.Bool("json", false, "print every row as JSON instead of tables")
@@ -141,6 +142,11 @@ func cmdBench(args []string, stdout, stderr io.Writer) int {
 				_, _ = fmt.Fprintln(stderr, "midopress bench:", err)
 				return 2
 			}
+			if *effort > 0 {
+				cp := *prof
+				cp.AVIFEffort = *effort
+				prof = &cp
+			}
 			_, _ = fmt.Fprintf(stderr, "running %s / %s ...\n", capName, profName)
 			rows = append(rows, runBench(engine, images, capName, caps, prof, hints, *budget, *jobs, *verify, *tryAll, *minGain)...)
 		}
@@ -173,7 +179,7 @@ func loadBenchImages(dir, derive string, limit int) ([]benchImage, error) {
 			return err
 		}
 		switch strings.ToLower(filepath.Ext(path)) {
-		case ".jpg", ".jpeg", ".png", ".gif":
+		case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif":
 		default:
 			return nil
 		}
@@ -290,6 +296,8 @@ func verifyResult(engine *img.Engine, b benchImage, res *img.Result, prof *img.P
 		}
 	case img.PNG:
 		src, err = png.Decode(bytes.NewReader(b.raw))
+	case img.WebP, img.AVIF:
+		src, err = engine.Backend().Decode(b.format, b.raw)
 	}
 	if err != nil || src == nil || res.Resized {
 		return -1

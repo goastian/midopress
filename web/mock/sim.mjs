@@ -8,7 +8,7 @@ export const FLOW_CAPACITY = 500
 const MEM_MAX = 256 * 1024 * 1024
 const LAT_MAX = 2000
 const LEVELS = ['debug', 'info', 'warn', 'error']
-export const KINDS = ['image', 'text', 'font', 'other']
+export const KINDS = ['image', 'text', 'font', 'media', 'other']
 
 const wpick = (items) => {
   let r = Math.random() * items.reduce((a, i) => a + i[1], 0)
@@ -85,6 +85,9 @@ export class Sim {
     this.byCodec = {}
     this.byProfile = {}
     this.byDecision = {}
+    this.byReason = {}
+    this.byCause = {}
+    this.missed = new Map()
     this.domains = new Map()
     this.flows = []
     this.flowIndex = new Map()
@@ -265,6 +268,7 @@ export class Sim {
       ? ['video/mp4', 'mp4']
       : pick([['application/pdf', 'pdf'], ['application/zip', 'zip'], ['audio/mpeg', 'mp3'], ['application/octet-stream', 'bin']])
     r.ct = t[0]
+    if (/^(video|audio)\//.test(t[0])) r.kind = 'media'
     r.path = `/${video ? 'videos/clip' : 'files/report'}-${rint(1, 999)}.${t[1]}`
     r.bin = Math.round(rlog(50e3, 8e6))
     r.reason = reason
@@ -285,13 +289,35 @@ export class Sim {
     add((this.byProfile[r.profile] ||= bucket()))
     const dec = r.decision === 'transformed' ? 'transformed' : r.reason
     this.byDecision[dec] = (this.byDecision[dec] || 0) + 1
+    const rk = (this.byReason[dec + '/' + r.kind] ||= { reason: dec, kind: r.kind, requests: 0, bytes_in: 0, bytes_out: 0 })
+    rk.requests++
+    rk.bytes_in += r.bin
+    rk.bytes_out += r.bout
+    const cause = r.decision === 'transformed' ? '' : r.reason === 'type' ? r.ct : r.reason === 'status' ? String(r.status || 206) : ''
+    if (cause) {
+      const c = (this.byCause[dec + '/' + cause] ||= { reason: dec, cause, requests: 0, bytes_in: 0 })
+      c.requests++
+      c.bytes_in += r.bin
+    }
     for (const arr of [this.series.seconds, this.series.minutes]) {
       const p = arr[arr.length - 1]
       p.requests++
       p.bytes_in += r.bin
       p.bytes_out += r.bout
     }
-    if (this.settings.domains) add(this.domainBucket(r.host))
+    if (this.settings.domains) {
+      add(this.domainBucket(r.host))
+      const m = (this.missed.get(r.host) || (this.missed.set(r.host, { domain: r.host, missed_bytes: 0, media_bytes: 0, requests: 0, transformed: 0, bytes_in: 0, bytes_out: 0, reasons: new Map() }), this.missed.get(r.host)))
+      add(m)
+      if (r.kind === 'media') m.media_bytes += r.bin
+      if (r.decision !== 'transformed') {
+        if (r.kind !== 'media' && r.kind !== 'other') m.missed_bytes += r.bin
+        const hr = m.reasons.get(dec + '/' + r.kind) || { reason: dec, kind: r.kind, requests: 0, bytes_in: 0 }
+        hr.requests++
+        hr.bytes_in += r.bin
+        m.reasons.set(dec + '/' + r.kind, hr)
+      }
+    }
 
     const c = this.cache
     if (r.cache_hit) c.hits++
@@ -529,15 +555,43 @@ export class Sim {
       by_codec: mapB(this.byCodec),
       by_profile: Object.fromEntries(Object.entries(this.byProfile).map(([k, v]) => [k, rb(v)]).filter(([, v]) => v.requests > 0)),
       by_decision: { ...this.byDecision },
+      by_reason: Object.values(this.byReason).sort((a, b) => b.bytes_in - a.bytes_in).map((r) => ({ ...r })),
+      by_cause: Object.values(this.byCause).sort((a, b) => b.bytes_in - a.bytes_in).map((c) => ({ ...c })),
       latency: this.quantiles(),
       cache: { ...c, hit_rate: lookups ? Number((c.hits / lookups).toFixed(4)) : 0 },
-      connections: { clients_active: active, ...this.conn },
+      connections: { clients_active: active, tunnel_bytes_up: Math.round(this.conn.tunnels_total * 40e3), tunnel_bytes_down: Math.round(this.conn.tunnels_total * 900e3), ...this.conn },
       cpu: { ...this.cpu },
       top_domains: this.settings.domains
         ? [...this.domains.entries()].sort((a, b) => b[1].requests - a[1].requests).slice(0, 15).map(([domain, b]) => ({ domain, ...b }))
         : null,
+      top_missed: this.settings.domains ? this.topMissed(10) : null,
       series: { seconds: this.series.seconds.map((p) => ({ ...p })), minutes: this.series.minutes.map((p) => ({ ...p })) },
     }
+  }
+
+  topMissed(n) {
+    return [...this.missed.values()]
+      .filter((m) => m.missed_bytes > 0 || m.media_bytes > 0)
+      .sort((a, b) => b.missed_bytes - a.missed_bytes || b.requests - a.requests)
+      .slice(0, n)
+      .map((m) => ({
+        domain: m.domain, requests: m.requests, transformed: m.transformed, bytes_in: m.bytes_in, bytes_out: m.bytes_out,
+        missed_bytes: m.missed_bytes, media_bytes: m.media_bytes,
+        reasons: [...m.reasons.values()].sort((a, b) => b.bytes_in - a.bytes_in),
+      }))
+  }
+
+  missedByReason(reason, limit) {
+    const hosts = []
+    for (const m of this.missed.values()) {
+      const kinds = [...m.reasons.values()].filter((r) => r.reason === reason)
+      if (!kinds.length) continue
+      hosts.push({
+        domain: m.domain, requests: kinds.reduce((a, k) => a + k.requests, 0), bytes_in: kinds.reduce((a, k) => a + k.bytes_in, 0), kinds,
+      })
+    }
+    hosts.sort((a, b) => b.bytes_in - a.bytes_in)
+    return { enabled: this.settings.domains, reason, hosts: this.settings.domains ? hosts.slice(0, limit) : [] }
   }
 
   metrics() {
@@ -595,6 +649,9 @@ export class Sim {
     this.byCodec = {}
     this.byProfile = {}
     this.byDecision = {}
+    this.byReason = {}
+    this.byCause = {}
+    this.missed.clear()
     this.domains.clear()
     this.lat = []
     this.cache.hits = this.cache.misses = this.cache.evictions = this.cache.expired = 0

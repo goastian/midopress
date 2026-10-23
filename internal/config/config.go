@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -177,12 +178,19 @@ type Pipeline struct {
 	MinGain                 float64       `yaml:"min_gain"`
 	MaxConcurrentTranscodes int           `yaml:"max_concurrent_transcodes"`
 	TranscodeWait           time.Duration `yaml:"transcode_wait"`
-	MemoryBudget            ByteSize      `yaml:"memory_budget"`
+	// MemoryBudget bounds what the pipeline holds in buffers and pictures at the
+	// same time. 0 takes a quarter of the memory of the machine or container,
+	// between 256 MiB and 8 GiB.
+	MemoryBudget ByteSize `yaml:"memory_budget"`
 	// Profile is how far images may be pushed: lossless, balanced, saver or
 	// extreme. A client can ask for another one per request.
 	Profile string `yaml:"profile"`
-	Text    Text   `yaml:"text"`
-	Image   Image  `yaml:"image"`
+	// NoTransform is what to do with a response that says Cache-Control:
+	// no-transform: respect it, recode the images that say it, recode anything,
+	// or (the default, "profile") do what the profile of the request says.
+	NoTransform string `yaml:"no_transform"`
+	Text        Text   `yaml:"text"`
+	Image       Image  `yaml:"image"`
 }
 
 // Text configures the compression of text like content.
@@ -232,13 +240,20 @@ type Image struct {
 	JPEG bool `yaml:"jpeg"`
 	// JPEGQuality fixes the quality of recoded images, 1 to 100. 0 lets the
 	// proxy find, for each image, the lowest quality that meets the profile.
-	JPEGQuality int           `yaml:"jpeg_quality"`
-	PNG         bool          `yaml:"png"`
-	GIF         bool          `yaml:"gif"`
-	MinBytes    ByteSize      `yaml:"min_bytes"`
-	MaxBytes    ByteSize      `yaml:"max_bytes"`
-	MaxPixels   int64         `yaml:"max_pixels"`
-	Timeout     time.Duration `yaml:"timeout"`
+	JPEGQuality int  `yaml:"jpeg_quality"`
+	PNG         bool `yaml:"png"`
+	GIF         bool `yaml:"gif"`
+	// Modern recodes the WebP and AVIF pictures that sites already send.
+	Modern bool `yaml:"modern"`
+	// PageHints reads the HTML that goes by to learn how wide each image is shown,
+	// for the profiles that resize, and which files have an integrity hash.
+	PageHints bool `yaml:"page_hints"`
+	// HintDPR is the pixel density assumed for those widths.
+	HintDPR   float64       `yaml:"hint_dpr"`
+	MinBytes  ByteSize      `yaml:"min_bytes"`
+	MaxBytes  ByteSize      `yaml:"max_bytes"`
+	MaxPixels int64         `yaml:"max_pixels"`
+	Timeout   time.Duration `yaml:"timeout"`
 	// Metric measures how close a recoded image is to the original: dssim
 	// (default), ssim or ssimulacra2.
 	Metric string `yaml:"metric"`
@@ -295,8 +310,9 @@ func Default() *Config {
 		Pipeline: Pipeline{
 			MinGain:       0.02,
 			TranscodeWait: 250 * time.Millisecond,
-			MemoryBudget:  256 << 20,
+			MemoryBudget:  0,
 			Profile:       "balanced",
+			NoTransform:   "profile",
 			Text: Text{
 				Minify:     Minify{HTML: "safe", CSS: "safe", JS: "off", SVG: "safe", JSON: "safe"},
 				Recompress: true,
@@ -308,6 +324,9 @@ func Default() *Config {
 				JPEG:              true,
 				PNG:               true,
 				GIF:               true,
+				Modern:            true,
+				PageHints:         true,
+				HintDPR:           2,
 				MinBytes:          1024,
 				MaxBytes:          8 << 20,
 				MaxPixels:         16_000_000,
@@ -409,6 +428,10 @@ func (c *Config) Validate() error {
 		add("auth.failure_window must be positive")
 	}
 
+	if nt := c.Pipeline.NoTransform; nt != "profile" && !slices.Contains(NoTransformModes, nt) {
+		add("pipeline.no_transform %q must be profile, respect, images or all", nt)
+	}
+
 	positive := map[string]time.Duration{
 		"upstream.dial_timeout":             c.Upstream.DialTimeout,
 		"upstream.tls_handshake_timeout":    c.Upstream.TLSHandshakeTimeout,
@@ -438,8 +461,11 @@ func (c *Config) Validate() error {
 	if p.MaxConcurrentTranscodes < 0 {
 		add("pipeline.max_concurrent_transcodes must not be negative")
 	}
-	if p.MemoryBudget < 1<<20 {
-		add("pipeline.memory_budget must be at least 1MiB")
+	if p.MemoryBudget != 0 && p.MemoryBudget < 1<<20 {
+		add("pipeline.memory_budget must be 0 (automatic) or at least 1MiB")
+	}
+	if p.Image.HintDPR < 1 || p.Image.HintDPR > 4 {
+		add("pipeline.image.hint_dpr must be between 1 and 4")
 	}
 	if p.Text.Brotli < 0 || p.Text.Brotli > 11 {
 		add("pipeline.text.brotli must be between 0 and 11")

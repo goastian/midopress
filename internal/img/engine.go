@@ -65,6 +65,10 @@ type Engine struct {
 
 	costs       costModel
 	unreachable unreachable
+	// unreachableModern is the same for pictures that come as WebP or AVIF,
+	// whose decoded source already carries the loss of its first encode and
+	// reaches a target differently from a photograph straight from a camera.
+	unreachableModern unreachable
 
 	// OnEncode, when set, is called after every encode of the search with the
 	// format, the pixels and the time the attempt took (encode, decode and
@@ -108,6 +112,8 @@ func (e *Engine) Optimize(ctx context.Context, in Input) (*Result, error) {
 		return e.optimizePNG(ctx, in)
 	case GIF:
 		return e.optimizeGIF(ctx, in)
+	case WebP, AVIF, JXL:
+		return e.optimizeModern(ctx, in)
 	}
 	return nil, ErrUnsupported
 }
@@ -216,7 +222,9 @@ func (e *Engine) formatsFor(in Input, alpha bool) []Format {
 		}
 		out = append(out, f)
 	}
-	if !alpha {
+	// JPEG is the last resort for a picture that came from a camera or a
+	// editor; it never beats the modern format a site already chose.
+	if !alpha && !isModern(in.Format) {
 		out = append(out, JPEG)
 	}
 	return out
@@ -267,11 +275,15 @@ func (e *Engine) lossy(ctx context.Context, in Input, src image.Image, orientati
 				continue
 			}
 		}
-		if e.unreachable.skip(f, p, sc.metric) && !in.TryAll {
+		unr := &e.unreachable
+		if isModern(in.Format) {
+			unr = &e.unreachableModern
+		}
+		if unr.skip(f, p, sc.metric) && !in.TryAll {
 			continue
 		}
 		res, spent, ceiling := e.search(ctx, f, pic, sc, in, attempts)
-		e.unreachable.record(f, p, sc.metric, res != nil, ceiling)
+		unr.record(f, p, sc.metric, res != nil, ceiling)
 		remaining -= spent
 		if res != nil {
 			res.Resized = resized
@@ -312,7 +324,7 @@ func (e *Engine) search(ctx context.Context, f Format, pic image.Image, sc *scor
 		q = clamp(in.Fixed, 1, 100)
 	}
 	pixels := pic.Bounds().Dx() * pic.Bounds().Dy()
-	opts := EncodeOptions{Effort: e.effort(f, pixels), Progressive: true}
+	opts := EncodeOptions{Effort: e.effort(f, pixels, in.Profile), Progressive: true}
 
 	type point struct {
 		q int
@@ -419,7 +431,13 @@ func sign(v float64) float64 {
 
 // effort picks the encoder effort. Slower settings squeeze a few percent more
 // out of the file, which only pays when the encoder is fast.
-func (e *Engine) effort(f Format, pixels int) int {
+func (e *Engine) effort(f Format, pixels int, p *Profile) int {
+	if p != nil && p.AVIFEffort > 0 && f == AVIF {
+		if e.be.Native(f) {
+			return p.AVIFEffort
+		}
+		return min(p.AVIFEffort, 2) // the speed of WebAssembly does not afford more
+	}
 	switch f {
 	case WebP:
 		return 7 // libwebp method 4

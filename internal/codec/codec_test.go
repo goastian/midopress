@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gen2brain/webp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -254,7 +255,28 @@ func TestSniffImage(t *testing.T) {
 	assert.Equal(t, KindGIF, SniffImage(staticGIF(t)))
 	assert.Equal(t, KindUnknown, SniffImage([]byte("<html>")))
 	assert.Equal(t, KindUnknown, SniffImage(nil))
-	assert.Equal(t, KindUnknown, SniffImage([]byte("RIFF....WEBPVP8 ")))
+	assert.Equal(t, KindWebP, SniffImage([]byte("RIFF....WEBPVP8 ")))
+	assert.Equal(t, KindAVIF, SniffImage([]byte("\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1")))
+	assert.Equal(t, KindAVIF, SniffImage([]byte("\x00\x00\x00\x1cftypavis\x00\x00\x00\x00avismif1")))
+	assert.Equal(t, KindUnknown, SniffImage([]byte("\x00\x00\x00\x1cftypheic\x00\x00\x00\x00mif1heic")))
+	assert.Equal(t, KindUnknown, SniffImage([]byte("RIFF....WAVEfmt ")))
+	assert.Equal(t, KindJXL, SniffImage([]byte{0xFF, 0x0A, 0x00}))
+	assert.Equal(t, KindJXL, SniffImage([]byte("\x00\x00\x00\x0cJXL \x0d\x0a\x87\x0a\x00\x00")))
+}
+
+func TestImageSizeOfModernFormats(t *testing.T) {
+	m := image.NewRGBA(image.Rect(0, 0, 480, 360))
+	var enc bytes.Buffer
+	require.NoError(t, webp.Encode(&enc, m, webp.Options{Quality: 80}))
+	w, h, err := ImageSize(KindWebP, enc.Bytes())
+	require.NoError(t, err)
+	assert.Equal(t, [2]int{480, 360}, [2]int{w, h})
+	_, _, err = ImageSize(KindWebP, []byte("RIFF....WEBPnothing"))
+	assert.Error(t, err)
+	_, _, err = ImageSize(KindAVIF, []byte("not an avif"))
+	assert.Error(t, err)
+	_, _, err = ImageSize(KindJXL, []byte("\xff\x0a"))
+	assert.Error(t, err)
 }
 
 func TestImageSize(t *testing.T) {

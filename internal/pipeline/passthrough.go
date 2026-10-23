@@ -113,3 +113,9 @@ func prefixed(prefix []byte, rest io.Reader) io.Reader {
 	}
 	return io.MultiReader(bytes.NewReader(prefix), rest)
 }
+
+// withCause returns o with its Cause set.
+func withCause(o Outcome, cause string) Outcome {
+	o.Cause = cause
+	return o
+}

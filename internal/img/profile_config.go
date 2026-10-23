@@ -24,6 +24,9 @@ type ProfileOverride struct {
 	QuantizePNG       *bool         `yaml:"quantize_png" json:"quantize_png,omitempty"`
 	AnimatedToStill   *bool         `yaml:"animated_to_still" json:"animated_to_still,omitempty"`
 	AnimatedQuality   *int          `yaml:"animated_quality" json:"animated_quality,omitempty"`
+	AVIFEffort        *int          `yaml:"avif_effort" json:"avif_effort,omitempty"`
+	NoTransform       *string       `yaml:"no_transform" json:"no_transform,omitempty"`
+	MinifyJS          *bool         `yaml:"minify_js" json:"minify_js,omitempty"`
 	Text              *TextOverride `yaml:"text" json:"text,omitempty"`
 }
 
@@ -33,6 +36,7 @@ type TextOverride struct {
 	Gzip         *int `yaml:"gzip" json:"gzip,omitempty"`
 	Zstd         *int `yaml:"zstd" json:"zstd,omitempty"`
 	BrotliStatic *int `yaml:"brotli_static" json:"brotli_static,omitempty"`
+	StaticWait   *int `yaml:"static_wait_ms" json:"static_wait_ms,omitempty"`
 }
 
 // ParseFormat reads the name of a modern format: jxl, avif or webp.
@@ -176,6 +180,24 @@ func apply(p *Profile, o ProfileOverride) error {
 			p.AnimatedQuality = *o.AnimatedQuality
 		}
 	}
+	if o.AVIFEffort != nil {
+		if *o.AVIFEffort < 0 || *o.AVIFEffort > 10 {
+			errs = append(errs, errors.New("avif_effort must be between 0 (the engine chooses) and 10"))
+		} else {
+			p.AVIFEffort = *o.AVIFEffort
+		}
+	}
+	if o.NoTransform != nil {
+		switch *o.NoTransform {
+		case NoTransformRespect, NoTransformImages, NoTransformAll:
+			p.NoTransform = *o.NoTransform
+		default:
+			errs = append(errs, errors.New("no_transform must be respect, images or all"))
+		}
+	}
+	if o.MinifyJS != nil {
+		p.MinifyJS = *o.MinifyJS
+	}
 	if t := o.Text; t != nil {
 		set := func(name string, v *int, dst *int, lo, hi int) {
 			if v == nil {
@@ -191,6 +213,7 @@ func apply(p *Profile, o ProfileOverride) error {
 		set("gzip", t.Gzip, &p.Text.Gzip, 1, 9)
 		set("zstd", t.Zstd, &p.Text.Zstd, 1, 22)
 		set("brotli_static", t.BrotliStatic, &p.Text.BrotliStatic, 0, 11)
+		set("static_wait_ms", t.StaticWait, &p.Text.StaticWaitMS, 0, 60000)
 	}
 	if p.Lossless {
 		// a lossless profile never searches

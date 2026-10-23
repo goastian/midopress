@@ -54,18 +54,25 @@ type stripe struct {
 	codecs   [nLabels]Bucket
 	profiles [nLabels]Bucket
 	reasons  [nLabels]uint64
-	seconds  [secondPoints]point
-	minutes  [minutePoints]point
-	hist     [latMinutes]histSlot
-	_        [64]byte
+	// reasonKinds is what each reason amounted to, by kind of content.
+	reasonKinds [nLabels][len(kindNames)]Bucket
+	causes      [nLabels]Bucket
+	seconds     [secondPoints]point
+	minutes     [minutePoints]point
+	hist        [latMinutes]histSlot
+	_           [64]byte
 }
 
-func (s *stripe) record(unix int64, ki, ci, pi, ri int, tr, in, out uint64, lat int) {
+func (s *stripe) record(unix int64, ki, ci, pi, ri, cai int, tr, in, out uint64, lat int) {
 	b := Bucket{1, tr, in, out}
 	s.kinds[ki] = s.kinds[ki].plus(b)
 	s.codecs[ci] = s.codecs[ci].plus(b)
 	s.profiles[pi] = s.profiles[pi].plus(b)
 	s.reasons[ri]++
+	s.reasonKinds[ri][ki] = s.reasonKinds[ri][ki].plus(b)
+	if cai >= 0 {
+		s.causes[cai] = s.causes[cai].plus(b)
+	}
 	if p := slot(s.seconds[:], unix); p != nil {
 		p.requests++
 		p.bytesIn += in

@@ -33,6 +33,8 @@ func (p *Pipeline) imageEnabled(kind img.Format) bool {
 		return ic.PNG
 	case img.GIF:
 		return ic.GIF
+	case img.WebP, img.AVIF, img.JXL:
+		return ic.Modern
 	}
 	return false
 }
@@ -140,6 +142,12 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 		declared = img.PNG
 	case "image/gif":
 		declared = img.GIF
+	case "image/webp":
+		declared = img.WebP
+	case "image/avif":
+		declared = img.AVIF
+	case "image/jxl":
+		declared = img.JXL
 	}
 	if !p.imageEnabled(declared) {
 		return p.passthrough(w, resp, PassDisabled)
@@ -158,23 +166,37 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 		return p.passthrough(w, resp, PassTooSmall)
 	}
 
-	expected := resp.ContentLength
-	if expected < 0 {
-		expected = ic.MaxBytes
-	}
-	weight := expected * 2
-	if !p.mem.TryAcquire(weight) {
-		return p.passthrough(w, resp, PassBusy)
-	}
-	defer p.mem.Release(weight)
+	// The memory for the body is taken as the body arrives: twice its size (the
+	// bytes as they came and, when they were encoded, the decoded ones). A body
+	// of unknown length is not charged for the largest one there could be.
+	mem := p.newReservation()
+	defer mem.release()
+	ctx := req.Context()
 
 	var raw bytes.Buffer
-	if resp.ContentLength > 0 {
-		raw.Grow(int(resp.ContentLength))
-	}
 	in := &errReader{r: resp.Body}
-	if _, err := raw.ReadFrom(io.LimitReader(in, ic.MaxBytes+1)); err != nil {
-		return Outcome{Reason: PassError, BytesIn: in.n, Err: err}
+	limited := io.LimitReader(in, ic.MaxBytes+1)
+	if resp.ContentLength >= 0 {
+		if !mem.grow(ctx, resp.ContentLength*2) {
+			return withCause(p.passthrough(w, resp, PassBusy), CauseMemoryBody)
+		}
+		raw.Grow(int(resp.ContentLength))
+		if _, err := raw.ReadFrom(limited); err != nil {
+			return Outcome{Reason: PassError, BytesIn: in.n, Err: err}
+		}
+	} else {
+		for {
+			if !mem.grow(ctx, (int64(raw.Len())+bodyStep)*2) {
+				return withCause(p.passthroughBody(w, resp, prefixed(raw.Bytes(), resp.Body), PassBusy), CauseMemoryBody)
+			}
+			n, err := io.CopyN(&raw, limited, bodyStep)
+			if err == io.EOF || (err == nil && n < bodyStep) {
+				break
+			}
+			if err != nil {
+				return Outcome{Reason: PassError, BytesIn: in.n, Err: err}
+			}
+		}
 	}
 	if int64(raw.Len()) > ic.MaxBytes {
 		return p.passthroughBody(w, resp, prefixed(raw.Bytes(), resp.Body), PassTooLarge)
@@ -185,57 +207,74 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 	if srcEnc != codec.None {
 		var decoded bytes.Buffer
 		if err := p.text.Decode(srcEnc, wire, &decoded, ic.MaxBytes); err != nil {
-			return p.writeBuffered(w, resp, wire, in.n, PassError)
+			return withCause(p.writeBuffered(w, resp, wire, in.n, PassError), "content-encoding: "+errCause(err))
 		}
 		plain = decoded.Bytes()
 	}
 
 	kind := img.Sniff(plain)
-	if kind == img.Unknown || !p.imageEnabled(kind) {
-		return p.writeBuffered(w, resp, wire, in.n, PassType)
+	if kind == img.Unknown {
+		return withCause(p.writeBuffered(w, resp, wire, in.n, PassType), "not a known image: "+mt)
 	}
-	width, height, err := codec.ImageSize(codecKind(kind), plain)
-	if err != nil {
-		return p.writeBuffered(w, resp, wire, in.n, PassError)
+	if !p.imageEnabled(kind) {
+		return withCause(p.writeBuffered(w, resp, wire, in.n, PassType), "turned off: "+kind.String())
 	}
-	if int64(width)*int64(height) > ic.MaxPixels {
-		return p.writeBuffered(w, resp, wire, in.n, PassTooLarge)
-	}
-	// decoding keeps the picture and a few copies of it
-	pixelWeight := int64(width) * int64(height) * 12
-	if !p.mem.TryAcquire(pixelWeight) {
-		return p.writeBuffered(w, resp, wire, in.n, PassBusy)
-	}
-	defer p.mem.Release(pixelWeight)
 
 	prof := fl.prof
 	caps := img.CapsFromAccept(req.Header.Get("Accept"))
 	var hints img.Hints
 	if prof.ResizeToViewport {
 		hints = hintsFrom(req.Header)
+		if hints.ViewportWidth == 0 && p.cfg.Image.PageHints {
+			// no screen size from the client: use how wide the page showed it
+			if w := p.pages.width(requestURL(req)); w > 0 {
+				hints = img.Hints{ViewportWidth: (w + 49) / 50 * 50, DPR: p.dprGuess()}
+			}
+		}
 	}
 	fixed := p.quality(req.Header, fl)
 	key := imageKey(plain, prof, caps, hints, fixed)
 	input := img.Input{Raw: plain, Format: kind, Caps: caps, Profile: prof, Hints: hints, Fixed: fixed, Budget: ic.Timeout}
 
+	// What is already done needs no memory for the picture: the cache is asked
+	// before the pixels are counted.
 	entry, ok := p.cache.Get(key)
 	d.hit, d.plain = ok, plain
 	if !ok {
-		res, err := p.recode(req.Context(), key, input)
+		width, height, err := codec.ImageSize(codecKind(kind), plain)
+		if err != nil {
+			return withCause(p.writeBuffered(w, resp, wire, in.n, PassError), "size: "+errCause(err))
+		}
+		if int64(width)*int64(height) > ic.MaxPixels {
+			return p.writeBuffered(w, resp, wire, in.n, PassTooLarge)
+		}
+		// decoding, resizing, measuring and encoding keep the picture and many
+		// copies of it
+		weight := pixelWeight(int64(width)*int64(height), caps, prof)
+		if !mem.grow(ctx, mem.n+weight) {
+			// not lost, only late: the next request finds it done
+			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
+			return withCause(p.writeBuffered(w, resp, wire, in.n, PassBusy), CauseMemoryPixels)
+		}
+
+		res, err := p.recode(ctx, key, input)
 		switch {
 		case errors.Is(err, errBusy):
-			return p.writeBuffered(w, resp, wire, in.n, PassBusy)
+			// no CPU slot in time: the original goes now, and the next request
+			// finds the result
+			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
+			return withCause(p.writeBuffered(w, resp, wire, in.n, PassBusy), CauseCPU)
 		case errors.Is(err, img.ErrBudget):
-			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header))
+			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
 			return p.writeBuffered(w, resp, wire, in.n, PassBudget)
 		case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):
-			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header))
+			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
 			return p.writeBuffered(w, resp, wire, in.n, PassTimeout)
 		case errors.Is(err, img.ErrUnsupported):
 			p.cache.Add(key, &xcache.Entry{Keep: true, Expires: p.expiry(resp.Header)})
-			return p.writeBuffered(w, resp, wire, in.n, PassType)
+			return withCause(p.writeBuffered(w, resp, wire, in.n, PassType), leftAlone(kind, err))
 		case err != nil:
-			return p.writeBuffered(w, resp, wire, in.n, PassError)
+			return withCause(p.writeBuffered(w, resp, wire, in.n, PassError), "recode: "+errCause(err))
 		}
 		entry = entryFor(res, len(plain), p.cfg.MinGain, p.expiry(resp.Header))
 		if !res.Limited || !entry.Keep {
@@ -243,7 +282,7 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 			p.cache.Add(key, entry)
 		}
 		if res.Limited {
-			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header))
+			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
 		}
 	}
 	if entry.Keep || !p.worthIt(len(entry.Data), len(wire)) {
@@ -251,6 +290,48 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 	}
 	d.entry = entry
 	return p.writeRecoded(w, resp, srcEnc, entry, prof, hints, in.n)
+}
+
+// bodyStep is how much more of a body of unknown length is accounted for each
+// time the memory for it runs out.
+const bodyStep = 256 << 10
+
+// pixelWeight is the memory that recoding a picture of px pixels holds at its
+// peak, in bytes. It was measured, with the peak resident memory of the process
+// around one recode of a photograph: 79 bytes per pixel when the answer is a
+// JPEG, 156 when WebP is tried and 174 when AVIF is. The weight is that of the
+// dearest format that may be tried, with a tenth over.
+func pixelWeight(px int64, caps img.Caps, prof *img.Profile) int64 {
+	per := int64(88)
+	for _, f := range prof.Formats {
+		switch {
+		case f == img.AVIF && caps.AVIF:
+			per = max(per, 192)
+		case caps.Has(f):
+			per = max(per, 172)
+		}
+	}
+	return px * per
+}
+
+// leftAlone is the cause of an image that the engine would not recode: the
+// format and, when the engine said, why (animated, a colour profile, ...).
+func leftAlone(kind img.Format, err error) string {
+	why := strings.TrimPrefix(err.Error(), img.ErrUnsupported.Error())
+	return "left alone: " + kind.String() + why
+}
+
+// errCause is an error as a cause: short, and without what changes from one
+// image to the next.
+func errCause(err error) string {
+	m := err.Error()
+	if i := strings.IndexAny(m, "\n"); i >= 0 {
+		m = m[:i]
+	}
+	if len(m) > 80 {
+		m = m[:80]
+	}
+	return m
 }
 
 func withoutBudget(in img.Input) img.Input {
@@ -266,6 +347,12 @@ func codecKind(f img.Format) codec.ImageKind {
 		return codec.KindPNG
 	case img.GIF:
 		return codec.KindGIF
+	case img.WebP:
+		return codec.KindWebP
+	case img.AVIF:
+		return codec.KindAVIF
+	case img.JXL:
+		return codec.KindJXL
 	}
 	return codec.KindUnknown
 }

@@ -76,10 +76,16 @@ pipeline:
   # for transcode_wait, the response is passed through instead of queueing.
   max_concurrent_transcodes: 0
   transcode_wait: 250ms
-  # Memory the pipeline may hold in buffers at once. Past it, responses are
-  # passed through. Images also need memory to decode: about 4 bytes per pixel
-  # for each concurrent job.
-  memory_budget: 256MiB
+  # Memory the pipeline may hold in buffers and pictures at once. A response that
+  # does not find room within transcode_wait is passed through. Recoding a picture
+  # takes 80 to 190 bytes per pixel (measured: 1.9 megapixels hold 140 to 320 MB
+  # at their peak, 7.7 megapixels over a gigabyte), so this decides how many big
+  # ones are recoded together. 0 takes a quarter of the memory of the machine or
+  # container, at least 256MiB and at most 8GiB. A picture that needs more than the
+  # whole budget is never recoded (256MiB: over about 1.3 megapixels with AVIF), and
+  # one that finds no room now is recoded in the background for the next request.
+  # Needs a restart to change.
+  memory_budget: 0
   # How far images may be pushed. Every profile keeps an image looking the same
   # to a person; they differ in how strict the measured similarity is.
   #   lossless  only bit-exact work: metadata, PNG optimization, lossless recoding
@@ -92,6 +98,18 @@ pipeline:
   # A client can ask for another one with the X-MidoPress-Profile header, and
   # Save-Data: on raises balanced to saver.
   profile: balanced
+  # What to do with a response that says Cache-Control: no-transform, which
+  # RFC 9111 says a proxy must not change. It was made to stop operators from
+  # damaging content on its way to a person; here the proxy is the one the person
+  # chose, and an image is only replaced by a result that was measured.
+  #   profile  what the profile says (default): lossless and balanced respect it,
+  #            saver and extreme recode the images that carry it
+  #   respect  always keep it
+  #   images   recode images that carry it, in every profile
+  #   all      recode text too, which can break files that are signed or hashed
+  # A request that says it is always respected, and so are ranges. A rule can
+  # change it for a site with `set: {no_transform: images}`.
+  no_transform: profile
   text:
     # Compression levels. 0 uses the level of the profile, which also compresses
     # responses that look cacheable with a slower level, once, and keeps the result.
@@ -127,6 +145,18 @@ pipeline:
     png: true
     # GIF, animated ones become animated WebP for clients that accept it.
     gif: true
+    # Recode the WebP and AVIF pictures that sites already send, measured against
+    # what the site sent. Animated ones, and the ones that carry a colour profile
+    # other than sRGB, an orientation or a crop, are left alone.
+    modern: true
+    # Read the HTML that goes by to learn how wide each image is shown, so that the
+    # profiles that resize (saver, extreme) can do it when the client does not say
+    # the size of its screen, and which scripts and style sheets the page loads
+    # with an integrity hash, which are never minified.
+    page_hints: true
+    # Pixel density assumed for those widths: the page says how wide, not how
+    # dense the screen is. 2 keeps the detail of a phone or a hi-dpi laptop.
+    hint_dpr: 2
     min_bytes: 1KiB
     max_bytes: 8MiB
     max_pixels: 16000000
@@ -175,16 +205,20 @@ cache:
 #
 # The fields are target_dssim, target_ssim, target_ssimulacra2, attempts,
 # formats, resize_to_viewport, photo_colors, quantize_png, animated_to_still,
-# animated_quality and text {brotli, gzip, zstd, brotli_static}. A device can be
-# given a profile with `midopress device add -profile NAME`.
+# animated_quality, avif_effort (1 to 10, how hard AVIF is tried: 4 in balanced and
+# 5 in saver and extreme, never above 2 with WebAssembly), no_transform (respect,
+# images or all, see pipeline.no_transform), minify_js and text {brotli, gzip,
+# zstd, brotli_static, static_wait_ms (the most a request waits for the slow
+# brotli level, in milliseconds)}. A device can be given a profile with
+# `midopress device add -profile NAME`.
 profiles: {}
 
 # Rules decide what happens to each request or response, in order. `action` is
 # passthrough (leave the response alone) or passthrough_tls (do not intercept
 # the HTTPS connection, only with conditions on the host); `profile` picks a
 # profile; `set` changes minify_html, minify_css, minify_js, minify_svg,
-# minify_json (off, safe, aggressive, true, false), images (bool), text (bool)
-# and quality (1 to 100). Profile and set accumulate, the first action stops the
+# minify_json (off, safe, aggressive, true, false), images (bool), text (bool),
+# quality (1 to 100) and no_transform (respect, images, all). Profile and set accumulate, the first action stops the
 # evaluation. The conditions use the mitmproxy filter language: ~d domain, ~u
 # URL, ~t content type, ~c status, ~m method, ~h/~hq/~hs headers, ~b body, ~q
 # request, ~s response, ~src/~dst address, with & | ! and parentheses. For

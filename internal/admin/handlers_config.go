@@ -93,7 +93,8 @@ func (s *Server) view() (configView, error) {
 			TargetDSSIM: p.TargetDSSIM, TargetSSIM: p.TargetSSIM, TargetSSIMULACRA2: p.TargetSSIMULACRA2,
 			Attempts: p.Attempts, Formats: formats, ResizeToViewport: p.ResizeToViewport, PhotoColors: p.PhotoColors,
 			QuantizePNG: p.QuantizePNG, AnimatedToStill: p.AnimatedToStill, AnimatedQuality: p.AnimatedQuality,
-			Text:     textLevels{Brotli: p.Text.Brotli, Gzip: p.Text.Gzip, Zstd: p.Text.Zstd, BrotliStatic: p.Text.BrotliStatic},
+			AVIFEffort: p.AVIFEffort, NoTransform: orDefault(p.NoTransform, img.NoTransformRespect), MinifyJS: p.MinifyJS,
+			Text:     textLevels{Brotli: p.Text.Brotli, Gzip: p.Text.Gzip, Zstd: p.Text.Zstd, BrotliStatic: p.Text.BrotliStatic, StaticWait: p.Text.StaticWaitMS},
 			Override: override,
 		})
 	}

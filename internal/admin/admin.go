@@ -140,6 +140,7 @@ func (s *Server) routes() {
 	})
 	get("/api/v1/about", s.handleAbout)
 	get("/api/v1/stats", s.handleStats)
+	get("/api/v1/stats/missed", s.handleMissed)
 	get("/api/v1/events", s.handleEvents)
 	get("/api/v1/stats/stream", s.handleEvents)
 

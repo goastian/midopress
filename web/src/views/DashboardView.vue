@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../api/client'
 import { settings, stats } from '../composables/live'
 import { bytes, count, ms, percent, ratio } from '../composables/format'
 import { toastError } from '../composables/toast'
-import type { Bucket } from '../api/types'
+import type { Bucket, ReasonHost } from '../api/types'
 import DashChart from '../components/DashChart.vue'
 import DashTable, { type DashRow } from '../components/DashTable.vue'
 import UiNum from '../components/UiNum.vue'
@@ -36,10 +36,86 @@ const kinds = computed(() => bucketRows(stats.value?.by_kind))
 const codecs = computed(() => bucketRows(stats.value?.by_codec))
 const profiles = computed(() => bucketRows(stats.value?.by_profile))
 
-const decisions = computed<DashRow[]>(() => {
-  const e = Object.entries(stats.value?.by_decision ?? {}).sort((a, b) => b[1] - a[1])
-  const total = e.reduce((s, x) => s + x[1], 0) || 1
-  return e.map(([k, n]) => ({ key: k, label: k, cells: [count(n)], bar: n / total, barText: percent((n / total) * 100, 0), green: k === 'transformed' }))
+// What was left alone, by reason and kind, with the bytes: the bytes of the
+// images, text and fonts here are the ones that were not saved.
+const leftAlone = computed<DashRow[]>(() => {
+  const e = (stats.value?.by_reason ?? []).filter((r) => r.reason !== 'transformed')
+  const total = e.reduce((s, x) => s + x.bytes_in, 0) || 1
+  return e.slice(0, 14).map((r) => ({
+    key: r.reason + '/' + r.kind,
+    label: `${r.reason} · ${r.kind}`,
+    cells: [count(r.requests), bytes(r.bytes_in)],
+    bar: r.bytes_in / total,
+    barText: percent((r.bytes_in / total) * 100, 0),
+    green: false,
+  }))
+})
+
+// The reasons that need a cause: why it was busy, which type is not handled.
+const causes = computed<DashRow[]>(() => {
+  const e = stats.value?.by_cause ?? []
+  const total = e.reduce((s, x) => s + x.bytes_in, 0) || 1
+  return e.slice(0, 12).map((c) => ({
+    key: c.reason + '/' + c.cause,
+    label: `${c.reason}: ${c.cause}`,
+    cells: [count(c.requests), bytes(c.bytes_in)],
+    bar: c.bytes_in / total,
+    barText: percent((c.bytes_in / total) * 100, 0),
+    green: false,
+  }))
+})
+
+// Which hosts a reason came from, asked of the server when one is picked.
+const reasons = computed(() => [...new Set((stats.value?.by_reason ?? []).filter((r) => r.reason !== 'transformed').map((r) => r.reason))])
+const pickedReason = ref('')
+const byHost = ref<ReasonHost[]>([])
+const byHostOn = ref(true)
+async function loadHosts() {
+  if (!pickedReason.value) {
+    byHost.value = []
+    return
+  }
+  try {
+    const m = await api.missed(pickedReason.value, 15)
+    byHost.value = m.hosts
+    byHostOn.value = m.enabled
+  } catch (e) {
+    toastError(e)
+  }
+}
+watch(pickedReason, loadHosts)
+watch(() => settings.value.domains, loadHosts)
+const hostRows = computed<DashRow[]>(() => {
+  const max = Math.max(1, ...byHost.value.map((h) => h.bytes_in))
+  return byHost.value.map((h) => ({
+    key: h.domain,
+    label: h.domain,
+    cells: [count(h.requests), bytes(h.bytes_in), h.kinds.map((k) => k.kind).join(', ')],
+    bar: h.bytes_in / max,
+    barText: '',
+    green: false,
+  }))
+})
+
+const missed = computed<DashRow[]>(() => {
+  const d = stats.value?.top_missed ?? []
+  const max = Math.max(1, ...d.map((x) => x.missed_bytes + x.media_bytes))
+  return d.map((x) => ({
+    key: x.domain,
+    label: x.domain,
+    cells: [
+      count(x.requests),
+      bytes(x.missed_bytes),
+      bytes(x.media_bytes),
+      x.reasons
+        .slice(0, 2)
+        .map((r) => `${r.reason} ${count(r.requests)}`)
+        .join(', '),
+    ],
+    bar: (x.missed_bytes + x.media_bytes) / max,
+    barText: percent(x.bytes_in > 0 ? ((x.missed_bytes + x.media_bytes) / x.bytes_in) * 100 : 0, 0),
+    green: false,
+  }))
 })
 
 const domains = computed<DashRow[]>(() => {
@@ -56,7 +132,32 @@ const domains = computed<DashRow[]>(() => {
 
 const s = computed(() => stats.value)
 const t = computed(() => s.value?.totals)
-const keptShare = computed(() => (t.value && t.value.bytes_in > 0 ? (t.value.bytes_out / t.value.bytes_in) * 100 : 100))
+
+// What the proxy can shrink (images, text, fonts), what it passes as it comes
+// (video and audio, which are most of the bytes of a phone) and what it never
+// sees (the HTTPS tunnels it does not open). The headline is the first: mixing
+// it with the others turns it into an average of things that are not alike.
+function sum(kinds: string[]): Bucket {
+  const k = stats.value?.by_kind ?? {}
+  return kinds.reduce<Bucket>(
+    (a, n) => {
+      const b = k[n]
+      return b ? { requests: a.requests + b.requests, transformed: a.transformed + b.transformed, bytes_in: a.bytes_in + b.bytes_in, bytes_out: a.bytes_out + b.bytes_out } : a
+    },
+    { requests: 0, transformed: 0, bytes_in: 0, bytes_out: 0 },
+  )
+}
+const comp = computed(() => sum(['image', 'text', 'font']))
+const compSaved = computed(() => comp.value.bytes_in - comp.value.bytes_out)
+const compPercent = computed(() => (comp.value.bytes_in > 0 ? (compSaved.value / comp.value.bytes_in) * 100 : 0))
+const media = computed(() => sum(['media']))
+const otherKind = computed(() => sum(['other']))
+const tunnel = computed(() => (s.value?.connections.tunnel_bytes_down ?? 0) + (s.value?.connections.tunnel_bytes_up ?? 0))
+const everything = computed(() => (t.value?.bytes_in ?? 0) + (s.value?.connections.tunnel_bytes_down ?? 0))
+function share(n: number) {
+  return everything.value > 0 ? percent((n / everything.value) * 100, 0) : '-'
+}
+const keptShare = computed(() => (comp.value.bytes_in > 0 ? (comp.value.bytes_out / comp.value.bytes_in) * 100 : 100))
 const transformedShare = computed(() => (t.value && t.value.requests > 0 ? t.value.transformed / t.value.requests : 0))
 const cacheTotal = computed(() => (s.value ? s.value.cache.hits + s.value.cache.misses : 0))
 
@@ -90,36 +191,55 @@ async function setDomains(on: boolean) {
 
     <template v-else>
       <section class="hero" aria-labelledby="hero-line">
-        <p v-if="t.bytes_in === 0" id="hero-line" class="statement">
+        <p v-if="comp.bytes_in === 0" id="hero-line" class="statement">
           <span class="fig zero"><UiNum :value="0" :format="bytes" /></span>
-          <span class="of">saved so far.</span>
+          <span class="of">saved on images, text and fonts so far.</span>
         </p>
         <p v-else id="hero-line" class="statement">
-          <span class="fig"><UiNum :value="t.saved" :format="bytes" /></span>
+          <span class="fig"><UiNum :value="compSaved" :format="bytes" /></span>
           <span class="of">
-            saved of <UiNum :value="t.bytes_in" :format="bytes" />, <UiNum :value="t.saved_percent" :format="(n) => percent(n, 0)" />
+            saved of <UiNum :value="comp.bytes_in" :format="bytes" /> of images, text and fonts,
+            <UiNum :value="compPercent" :format="(n) => percent(n, 0)" />
           </span>
         </p>
 
-        <template v-if="t.bytes_in > 0">
-          <div class="reduction" role="img" :aria-label="`Of ${bytes(t.bytes_in)} received from origins, ${bytes(t.bytes_out)} was sent and ${bytes(t.saved)} saved`">
+        <template v-if="comp.bytes_in > 0">
+          <div class="reduction" role="img" :aria-label="`Of ${bytes(comp.bytes_in)} of images, text and fonts, ${bytes(comp.bytes_out)} was sent and ${bytes(compSaved)} saved`">
             <i class="sent" :style="{ width: keptShare + '%' }" />
             <i class="gain" :style="{ width: 100 - keptShare + '%' }" />
           </div>
           <div class="key mono">
-            <span class="k-sent">sent <b>{{ bytes(t.bytes_out) }}</b></span>
-            <span v-if="keptShare >= 28 && keptShare <= 70" class="k-gain" :style="{ left: keptShare + '%' }">saved <b>{{ bytes(t.saved) }}</b></span>
-            <span v-else class="k-gain end">saved <b>{{ bytes(t.saved) }}</b></span>
+            <span class="k-sent">sent <b>{{ bytes(comp.bytes_out) }}</b></span>
+            <span v-if="keptShare >= 28 && keptShare <= 70" class="k-gain" :style="{ left: keptShare + '%' }">saved <b>{{ bytes(compSaved) }}</b></span>
+            <span v-else class="k-gain end">saved <b>{{ bytes(compSaved) }}</b></span>
           </div>
         </template>
-        <p v-else class="empty">
+        <p v-else-if="t.bytes_in === 0 && tunnel === 0" class="empty">
           Nothing has gone through the proxy yet. Open <RouterLink to="/connect">Connect</RouterLink> and paste the address into a device.
         </p>
+
+        <dl class="classes" aria-label="Where the bytes are">
+          <div>
+            <dt>Images, text, fonts</dt>
+            <dd class="mono"><b>{{ bytes(comp.bytes_in) }}</b> <span class="muted">{{ share(comp.bytes_in) }} of all bytes, shrunk {{ percent(compPercent, 0) }}</span></dd>
+          </div>
+          <div>
+            <dt>Video and audio</dt>
+            <dd class="mono"><b>{{ bytes(media.bytes_in) }}</b> <span class="muted">{{ share(media.bytes_in) }} of all bytes, passed as it comes</span></dd>
+          </div>
+          <div>
+            <dt>Not inspected</dt>
+            <dd class="mono"><b>{{ bytes(tunnel) }}</b> <span class="muted">{{ share(s.connections.tunnel_bytes_down) }} of all bytes, HTTPS tunnels that are never opened</span></dd>
+          </div>
+        </dl>
 
         <p class="tally small muted">
           <span class="mono">{{ count(t.requests) }}</span> requests,
           <span class="mono">{{ count(t.transformed) }}</span> changed ({{ ratio(transformedShare, 0) }}),
-          cache hit rate <span class="mono">{{ cacheTotal ? ratio(s.cache.hit_rate, 0) : '-' }}</span>
+          cache hit rate <span class="mono">{{ cacheTotal ? ratio(s.cache.hit_rate, 0) : '-' }}</span>.
+          Everything the proxy opened, video and other files included: <span class="mono">{{ bytes(t.saved) }}</span> saved of
+          <span class="mono">{{ bytes(t.bytes_in) }}</span> ({{ percent(t.saved_percent, 1) }}), of which
+          <span class="mono">{{ bytes(otherKind.bytes_in) }}</span> other files.
         </p>
       </section>
 
@@ -152,10 +272,10 @@ async function setDomains(on: boolean) {
           </section>
           <section class="sec">
             <div class="sec-head">
-              <h2>Decisions</h2>
-              <span class="sub">why responses were left alone</span>
+              <h2>Left alone</h2>
+              <span class="sub">why bytes were not shrunk</span>
             </div>
-            <DashTable :head="['Decision', 'Responses', 'Share']" :rows="decisions" />
+            <DashTable :head="['Reason · kind', 'Responses', 'Bytes', 'Share']" :rows="leftAlone" :hide-cols="[1]" empty="Everything the proxy opened was shrunk." />
           </section>
         </div>
       </div>
@@ -207,6 +327,44 @@ async function setDomains(on: boolean) {
           </dl>
         </section>
       </div>
+
+      <section class="sec">
+        <div class="sec-head">
+          <h2>Causes</h2>
+          <span class="sub">busy by memory or CPU, types that are not handled, statuses</span>
+        </div>
+        <DashTable :head="['Reason: cause', 'Responses', 'Bytes', 'Share']" :rows="causes" :hide-cols="[1]" empty="No cause to report yet." />
+      </section>
+
+      <section class="sec">
+        <div class="sec-head">
+          <h2>Where bytes were not saved</h2>
+          <UiToggle :model-value="settings.domains" :disabled="busy" label="Track domains" @update:model-value="setDomains" />
+        </div>
+        <template v-if="settings.domains && s.top_missed">
+          <DashTable
+            :head="['Host', 'Req', 'Not saved', 'Video and audio', 'Why', 'Of its bytes']"
+            :rows="missed"
+            :hide-cols="[3, 4]"
+            empty="No traffic yet. Hosts appear here as devices browse."
+          />
+          <div class="by-host">
+            <label class="sub" for="pick-reason">Which hosts had responses left alone because of</label>
+            <select id="pick-reason" v-model="pickedReason" class="select compact mono">
+              <option value="">pick a reason</option>
+              <option v-for="r in reasons" :key="r" :value="r">{{ r }}</option>
+            </select>
+            <DashTable
+              v-if="pickedReason"
+              :head="['Host', 'Responses', 'Bytes', 'Kinds', '']"
+              :rows="hostRows"
+              :hide-cols="[3]"
+              empty="No host in the tracked set."
+            />
+          </div>
+        </template>
+        <p v-else class="empty">Tracking is off. Turn it on to see which hosts the bytes that were not saved come from, and why. It records host names, never paths, in memory only, and counting starts from that moment.</p>
+      </section>
 
       <section class="sec">
         <div class="sec-head">
@@ -322,6 +480,44 @@ async function setDomains(on: boolean) {
 }
 .tally {
   margin-top: 0.4rem;
+}
+.classes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem 2rem;
+  margin: 0.8rem 0 0.2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+}
+.classes dt {
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 0.25rem;
+}
+.classes dd b {
+  display: block;
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  color: var(--ink);
+}
+.classes dd .muted {
+  display: block;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+.by-host {
+  margin-top: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+@media (max-width: 720px) {
+  .classes {
+    grid-template-columns: 1fr;
+  }
 }
 .pxx {
   display: flex;

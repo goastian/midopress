@@ -553,6 +553,8 @@ func TestJSONMatchesTypes(t *testing.T) {
 	for name, v := range map[string]any{
 		"Bucket": Bucket{}, "Totals": Totals{}, "Latency": Latency{}, "DomainStat": DomainStat{},
 		"SeriesPoint": SeriesPoint{}, "Series": Series{}, "Client": Client{},
+		"ReasonStat": ReasonStat{}, "CauseStat": CauseStat{}, "HostReason": HostReason{},
+		"MissedStat": MissedStat{}, "ReasonHost": ReasonHost{},
 	} {
 		require.NotEmpty(t, ts[name], name)
 		assert.ElementsMatch(t, ts[name], keysOf(t, v), name)
@@ -584,8 +586,11 @@ func TestSnapshotGolden(t *testing.T) {
 		`"by_codec":{"webp":{"requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400}},`+
 		`"by_profile":{"balanced":{"requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400}},`+
 		`"by_decision":{"transformed":1},`+
+		`"by_reason":[{"reason":"transformed","kind":"image","requests":1,"bytes_in":1000,"bytes_out":400}],`+
+		`"by_cause":[],`+
 		`"latency":{"p50_ms":%v,"p95_ms":%v,"p99_ms":%v,"samples":1},`+
 		`"top_domains":[{"domain":"a.test","requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400}],`+
+		`"top_missed":[],`+
 		`"series":{"seconds":[{"t":%d,"requests":0,"bytes_in":0,"bytes_out":0},{"t":%d,"requests":1,"bytes_in":1000,"bytes_out":400}],`+
 		`"minutes":[{"t":%d,"requests":0,"bytes_in":0,"bytes_out":0},{"t":%d,"requests":1,"bytes_in":1000,"bytes_out":400}]}}`,
 		s.Latency.P50Ms, s.Latency.P95Ms, s.Latency.P99Ms, now-1, now, min-60, min)

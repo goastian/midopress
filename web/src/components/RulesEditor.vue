@@ -18,7 +18,7 @@ interface Entry {
   set: { uid: number; key: string; value: string }[]
 }
 
-const setKeys: Record<string, 'mode' | 'bool' | 'int'> = {
+const setKeys: Record<string, 'mode' | 'bool' | 'int' | 'choice'> = {
   minify_html: 'mode',
   minify_css: 'mode',
   minify_js: 'mode',
@@ -27,9 +27,11 @@ const setKeys: Record<string, 'mode' | 'bool' | 'int'> = {
   images: 'bool',
   text: 'bool',
   quality: 'int',
+  no_transform: 'choice',
 }
 const keyNames = Object.keys(setKeys)
 const modes = ['off', 'safe', 'aggressive', 'true', 'false']
+const noTransformChoices = ['respect', 'images', 'all']
 
 let uid = 1
 function fromRules(rules: Rule[]): Entry[] {
@@ -133,7 +135,7 @@ function addSet(e: Entry) {
   e.set.push({ uid: uid++, key: free, value: defaultValue(free) })
 }
 function defaultValue(key: string) {
-  return setKeys[key] === 'int' ? '80' : setKeys[key] === 'bool' ? 'true' : 'safe'
+  return setKeys[key] === 'int' ? '80' : setKeys[key] === 'bool' ? 'true' : setKeys[key] === 'choice' ? 'images' : 'safe'
 }
 function changeKey(s: Entry['set'][number], ev: Event) {
   s.key = (ev.target as HTMLSelectElement).value
@@ -230,6 +232,9 @@ async function save() {
                 <option v-for="k in keyNames" :key="k" :value="k">{{ k }}</option>
               </select>
               <input v-if="setKeys[s.key] === 'int'" v-model="s.value" class="input mono val" type="number" min="1" max="100" step="1" aria-label="Quality 1 to 100" />
+              <select v-else-if="setKeys[s.key] === 'choice'" v-model="s.value" class="select compact val" aria-label="no_transform">
+                <option v-for="c in noTransformChoices" :key="c" :value="c">{{ c }}</option>
+              </select>
               <select v-else-if="setKeys[s.key] === 'bool'" v-model="s.value" class="select compact val">
                 <option value="true">true</option>
                 <option value="false">false</option>

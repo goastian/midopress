@@ -914,3 +914,93 @@ func TestDiscoveryDocumentFromOneAddress(t *testing.T) {
 	assert.Nil(t, noCA["pac"].(map[string]any)["full"])
 	assert.Equal(t, false, noCA["https"].(map[string]any)["intercept"])
 }
+
+func TestStatsSayWhyBytesWereNotSaved(t *testing.T) {
+	h := newHarness(t, withAdmin())
+	a := h.admin(t)
+	c := h.client()
+	a.call("PUT", "/api/v1/settings", obj{"domains": true})
+
+	h.get(c, h.plainURL("/image/jpeg"))
+	h.get(c, h.plainURL("/notransform"), "Accept-Encoding", "br")
+	h.get(c, h.plainURL("/notransform"), "Accept-Encoding", "br")
+	h.get(c, h.plainURL("/binary"))
+	h.get(c, h.plainURL("/range"), "Range", "bytes=0-99")
+	h.get(c, h.plainURL("/status/404"))
+
+	var s struct {
+		ByReason []struct {
+			Reason, Kind string
+			Requests     uint64
+			BytesIn      uint64 `json:"bytes_in"`
+		} `json:"by_reason"`
+		ByCause []struct {
+			Reason, Cause string
+			Requests      uint64
+		} `json:"by_cause"`
+		TopMissed *[]struct {
+			Domain  string
+			Missed  uint64 `json:"missed_bytes"`
+			Reasons []struct {
+				Reason, Kind string
+				Requests     uint64
+			}
+		} `json:"top_missed"`
+		ByProfile map[string]struct{ Requests uint64 } `json:"by_profile"`
+	}
+	a.into("GET", "/api/v1/stats", nil, 200, &s)
+
+	reasons := map[string]uint64{}
+	for _, r := range s.ByReason {
+		reasons[r.Reason+"/"+r.Kind] += r.Requests
+	}
+	assert.Equal(t, uint64(1), reasons["transformed/image"])
+	assert.Equal(t, uint64(2), reasons["no-transform/text"], "the two responses that forbade it")
+	assert.Equal(t, uint64(1), reasons["type/other"])
+
+	causes := map[string]uint64{}
+	for _, r := range s.ByCause {
+		causes[r.Reason+"/"+r.Cause] += r.Requests
+	}
+	assert.Equal(t, uint64(1), causes["type/application/octet-stream"])
+	assert.Equal(t, uint64(2), causes["no-transform/response"])
+	assert.Equal(t, uint64(1), causes["status/404"])
+	assert.Contains(t, s.ByProfile, "-", "what no profile applied to is a dash, not unknown")
+
+	require.NotNil(t, s.TopMissed)
+	require.NotEmpty(t, *s.TopMissed)
+	top := (*s.TopMissed)[0]
+	assert.Equal(t, "example.com", top.Domain)
+	assert.Positive(t, top.Missed)
+	var seen bool
+	for _, r := range top.Reasons {
+		seen = seen || (r.Reason == "no-transform" && r.Kind == "text" && r.Requests == 2)
+	}
+	assert.True(t, seen, "the host remembers why: %+v", top.Reasons)
+
+	var m struct {
+		Enabled bool
+		Reason  string
+		Hosts   []struct {
+			Domain   string
+			Requests uint64
+			BytesIn  uint64 `json:"bytes_in"`
+		}
+	}
+	a.into("GET", "/api/v1/stats/missed?reason=no-transform", nil, 200, &m)
+	assert.True(t, m.Enabled)
+	require.Len(t, m.Hosts, 1)
+	assert.Equal(t, "example.com", m.Hosts[0].Domain)
+	assert.Equal(t, uint64(2), m.Hosts[0].Requests)
+	assert.Positive(t, m.Hosts[0].BytesIn)
+
+	resp, _ := a.call("GET", "/api/v1/stats/missed", nil)
+	assert.Equal(t, 422, resp.StatusCode, "the reason is required")
+	resp, _ = a.call("GET", "/api/v1/stats/missed?reason=busy&limit=0", nil)
+	assert.Equal(t, 422, resp.StatusCode)
+
+	a.call("PUT", "/api/v1/settings", obj{"domains": false})
+	a.into("GET", "/api/v1/stats/missed?reason=no-transform", nil, 200, &m)
+	assert.False(t, m.Enabled)
+	assert.Empty(t, m.Hosts)
+}

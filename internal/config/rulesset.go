@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -10,11 +11,18 @@ import (
 var SetKeys = map[string]string{
 	"minify_html": "mode", "minify_css": "mode", "minify_js": "mode", "minify_svg": "mode", "minify_json": "mode",
 	"images": "bool", "text": "bool", "quality": "int",
+	"no_transform": "no_transform",
 }
+
+// NoTransformModes are the values of pipeline.no_transform, of the no_transform
+// setting of a profile and of the rule key: what to do with a response that
+// carries Cache-Control: no-transform. "profile" is only valid for the
+// configuration, where it means "what the profile says".
+var NoTransformModes = []string{"respect", "images", "all"}
 
 // ValidateSet checks the `set` of a rule: only known keys, with values of the
 // right kind. Modes are off, safe, aggressive or a plain bool, quality is 1 to
-// 100.
+// 100, no_transform one of NoTransformModes.
 func ValidateSet(set map[string]any) error {
 	var errs []string
 	keys := make([]string, 0, len(set))
@@ -38,6 +46,11 @@ func ValidateSet(set map[string]any) error {
 			n, ok := v.(int)
 			if !ok || n < 1 || n > 100 {
 				errs = append(errs, fmt.Sprintf("%s must be an integer from 1 to 100", k))
+			}
+		case "no_transform":
+			m, _ := v.(string)
+			if !slices.Contains(NoTransformModes, m) {
+				errs = append(errs, fmt.Sprintf("%s must be one of %s", k, strings.Join(NoTransformModes, ", ")))
 			}
 		case "mode":
 			switch m := v.(type) {

@@ -1,6 +1,6 @@
 import type {
   About, ApiError, CAInfo, Client, ConfigView, Device, Flow, FlowCompare, FlowList, LogState,
-  NewDevice, ProfileOverride, Rule, ServerEvent, Settings, StatsSnapshot, TestRequest,
+  MissedByReason, NewDevice, ProfileOverride, Rule, ServerEvent, Settings, StatsSnapshot, TestRequest,
   TestResult, ValidateResult,
 } from './types'
 
@@ -97,6 +97,7 @@ export async function blobUrl(path: string): Promise<string> {
 export const api = {
   about: () => get<About>('/about'),
   stats: () => get<StatsSnapshot>('/stats'),
+  missed: (reason: string, limit = 20) => get<MissedByReason>(`/stats/missed?reason=${encodeURIComponent(reason)}&limit=${limit}`),
 
   flows: (params: { filter?: string; kind?: string; limit?: number } = {}) => {
     const q = new URLSearchParams()

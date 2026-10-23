@@ -7,6 +7,7 @@
 package stats
 
 import (
+	"cmp"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -36,7 +37,9 @@ type state struct {
 	codecs   *labels
 	profiles *labels
 	reasons  *labels
+	causes   *labels
 	domains  *domainSet
+	missed   *domainSet
 	clients  *clientSet
 }
 
@@ -70,7 +73,9 @@ func (c *Collector) newState() *state {
 		codecs:   newLabels(),
 		profiles: newLabels(),
 		reasons:  newLabels(),
-		domains:  newDomainSet(c.opts.MaxDomains, c.domainsOn.Load()),
+		causes:   newLabels(),
+		domains:  newDomainSet(c.opts.MaxDomains, c.domainsOn.Load(), false),
+		missed:   newDomainSet(c.opts.MaxDomains, c.domainsOn.Load(), true),
 		clients:  &clientSet{max: c.opts.MaxClients},
 	}
 }
@@ -104,8 +109,12 @@ func (c *Collector) Record(e Event) {
 	}
 	ki := kindIndex(e.Kind)
 	ci := s.codecs.index(orDefault(e.Codec, "identity"))
-	pi := s.profiles.index(orDefault(e.Profile, "unknown"))
+	pi := s.profiles.index(orDefault(e.Profile, NoProfile))
 	ri := s.reasons.index(orDefault(e.Reason, "unknown"))
+	cai := -1
+	if e.Cause != "" {
+		cai = s.causes.index(orDefault(e.Reason, "unknown") + causeSep + e.Cause)
+	}
 	lat := -1
 	if e.Duration > 0 {
 		lat = latIndex(int64(e.Duration))
@@ -123,11 +132,16 @@ func (c *Collector) Record(e Event) {
 		st = &s.stripes[start&(nStripes-1)]
 		st.mu.Lock()
 	}
-	st.record(unix, ki, ci, pi, ri, tr, in, out, lat)
+	st.record(unix, ki, ci, pi, ri, cai, tr, in, out, lat)
 	st.mu.Unlock()
 
 	if e.Host != "" && c.domainsOn.Load() {
-		s.domains.add(e.Host, tr, in, out)
+		ev := domEvent{tr: tr, in: in, out: out, kind: ki}
+		if !e.Transformed {
+			ev.reason = orDefault(e.Reason, "unknown")
+		}
+		s.domains.add(e.Host, ev)
+		s.missed.add(e.Host, ev)
 	}
 	if e.ClientKey != "" {
 		ns := t.UnixNano()
@@ -164,11 +178,20 @@ func (c *Collector) SetDomains(on bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.domainsOn.Store(on)
-	c.st.Load().domains.setEnabled(on)
+	st := c.st.Load()
+	st.domains.setEnabled(on)
+	st.missed.setEnabled(on)
 }
 
 // Domains reports whether the aggregation by host is on.
 func (c *Collector) Domains() bool { return c.domainsOn.Load() }
+
+// NoProfile is the profile shown for the responses that no profile applied to,
+// the ones that were left alone before a profile was chosen.
+const NoProfile = "-"
+
+// causeSep separates the reason from the cause in the labels of causes.
+const causeSep = "\x00"
 
 // Snapshot returns the traffic numbers; TopDomains has up to topDomains hosts,
 // the ones that saved the most bytes.
@@ -184,6 +207,8 @@ func (c *Collector) Snapshot(topDomains int) Snapshot {
 	var kinds [len(kindNames)]Bucket
 	var codecs, profiles [nLabels]Bucket
 	var reasons [nLabels]uint64
+	var reasonKinds [nLabels][len(kindNames)]Bucket
+	var causes [nLabels]Bucket
 	var hist [latBuckets]uint64
 	var samples uint64
 	unix := now.Unix()
@@ -198,6 +223,10 @@ func (c *Collector) Snapshot(topDomains int) Snapshot {
 			codecs[k] = codecs[k].plus(st.codecs[k])
 			profiles[k] = profiles[k].plus(st.profiles[k])
 			reasons[k] += st.reasons[k]
+			causes[k] = causes[k].plus(st.causes[k])
+			for ki := range reasonKinds[k] {
+				reasonKinds[k][ki] = reasonKinds[k][ki].plus(st.reasonKinds[k][ki])
+			}
 		}
 		samples += st.addHist(&hist, unix/60)
 		addPoints(snap.Series.Seconds, st.seconds[:], unix)
@@ -218,9 +247,35 @@ func (c *Collector) Snapshot(topDomains int) Snapshot {
 	for i, n := range s.profiles.set.Load().names {
 		snap.ByProfile[n] = profiles[i]
 	}
+	snap.ByReason = []ReasonStat{}
 	for i, n := range s.reasons.set.Load().names {
 		snap.ByDecision[n] = reasons[i]
+		for ki, b := range reasonKinds[i] {
+			if b.Requests > 0 {
+				snap.ByReason = append(snap.ByReason, ReasonStat{Reason: n, Kind: kindNames[ki], Requests: b.Requests, BytesIn: b.BytesIn, BytesOut: b.BytesOut})
+			}
+		}
 	}
+	slices.SortFunc(snap.ByReason, func(a, b ReasonStat) int {
+		if a.BytesIn != b.BytesIn {
+			return cmp.Compare(b.BytesIn, a.BytesIn)
+		}
+		return cmp.Or(strings.Compare(a.Reason, b.Reason), strings.Compare(a.Kind, b.Kind))
+	})
+	snap.ByCause = []CauseStat{}
+	for i, n := range s.causes.set.Load().names {
+		if causes[i].Requests == 0 {
+			continue
+		}
+		reason, cause, _ := strings.Cut(n, causeSep)
+		snap.ByCause = append(snap.ByCause, CauseStat{Reason: reason, Cause: cause, Requests: causes[i].Requests, BytesIn: causes[i].BytesIn})
+	}
+	slices.SortFunc(snap.ByCause, func(a, b CauseStat) int {
+		if a.BytesIn != b.BytesIn {
+			return cmp.Compare(b.BytesIn, a.BytesIn)
+		}
+		return cmp.Or(strings.Compare(a.Reason, b.Reason), strings.Compare(a.Cause, b.Cause))
+	})
 	if samples > 0 {
 		snap.Latency = Latency{
 			P50Ms:   quantile(&hist, samples, 0.50),
@@ -232,8 +287,28 @@ func (c *Collector) Snapshot(topDomains int) Snapshot {
 	if c.domainsOn.Load() {
 		d := s.domains.top(topDomains)
 		snap.TopDomains = &d
+		m := s.missed.topMissed(topMissed)
+		snap.TopMissed = &m
 	}
 	return snap
+}
+
+// topMissed is how many hosts of the ones that lost the most bytes a snapshot
+// carries.
+const topMissed = 10
+
+// MissedByReason lists the hosts that had responses left alone for a reason,
+// the ones with the most bytes first, up to n. It is empty while the
+// aggregation by host is off.
+func (c *Collector) MissedByReason(reason string, n int) []ReasonHost {
+	if !c.domainsOn.Load() {
+		return []ReasonHost{}
+	}
+	out := c.st.Load().missed.byReason(reason, n)
+	if out == nil {
+		out = []ReasonHost{}
+	}
+	return out
 }
 
 // Clients lists the tracked clients, the most recently seen first. A client is

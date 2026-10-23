@@ -72,3 +72,66 @@ func TestParseMetric(t *testing.T) {
 	_, err := ParseMetric("psnr")
 	assert.Error(t, err)
 }
+
+func TestTheNewFieldsOfAProfile(t *testing.T) {
+	defaults := Profiles()
+	assert.Equal(t, 0, defaults[ProfileLossless].AVIFEffort)
+	assert.Equal(t, 4, defaults[ProfileBalanced].AVIFEffort)
+	assert.Equal(t, 5, defaults[ProfileSaver].AVIFEffort)
+	assert.Equal(t, 5, defaults[ProfileExtreme].AVIFEffort)
+	for name, want := range map[string]string{ProfileLossless: "", ProfileBalanced: "", ProfileSaver: NoTransformImages, ProfileExtreme: NoTransformImages} {
+		assert.Equal(t, want, defaults[name].NoTransform, name)
+	}
+	for name, want := range map[string]bool{ProfileLossless: false, ProfileBalanced: false, ProfileSaver: true, ProfileExtreme: true} {
+		assert.Equal(t, want, defaults[name].MinifyJS, name)
+	}
+	// every profile can wait for its slow brotli level, longer the more it saves
+	assert.Less(t, defaults[ProfileBalanced].Text.StaticWaitMS, defaults[ProfileSaver].Text.StaticWaitMS)
+	assert.Less(t, defaults[ProfileSaver].Text.StaticWaitMS, defaults[ProfileExtreme].Text.StaticWaitMS)
+
+	ps, err := BuildProfiles(map[string]ProfileOverride{
+		"saver": {AVIFEffort: ptr(7), NoTransform: ptr(NoTransformAll), MinifyJS: ptr(false), Text: &TextOverride{StaticWait: ptr(50)}},
+	})
+	require.NoError(t, err)
+	s := ps[ProfileSaver]
+	assert.Equal(t, 7, s.AVIFEffort)
+	assert.Equal(t, NoTransformAll, s.NoTransform)
+	assert.False(t, s.MinifyJS)
+	assert.Equal(t, 50, s.Text.StaticWaitMS)
+
+	for name, o := range map[string]ProfileOverride{
+		"avif_effort high": {AVIFEffort: ptr(11)},
+		"avif_effort low":  {AVIFEffort: ptr(-1)},
+		"no_transform":     {NoTransform: ptr("sometimes")},
+		"static_wait":      {Text: &TextOverride{StaticWait: ptr(-5)}},
+	} {
+		_, err := BuildProfiles(map[string]ProfileOverride{"balanced": o})
+		assert.Error(t, err, name)
+	}
+}
+
+type fakeNative struct {
+	Backend
+	native bool
+}
+
+func (f fakeNative) Native(Format) bool { return f.native }
+
+func TestAVIFEffortFollowsTheProfileWhereItIsAffordable(t *testing.T) {
+	saver := Profiles()[ProfileSaver]
+	none := &Profile{Name: "none"}
+	native := NewEngine(fakeNative{NewWASM(), true})
+	wasm := NewEngine(fakeNative{NewWASM(), false})
+
+	assert.Equal(t, 5, native.effort(AVIF, 1<<20, saver), "the native library affords what the profile asks")
+	assert.Equal(t, 2, wasm.effort(AVIF, 1<<20, saver), "WebAssembly never goes above its own default")
+	assert.Equal(t, 3, native.effort(AVIF, 1<<20, none), "no preference: the default of the engine")
+	assert.Equal(t, 2, wasm.effort(AVIF, 1<<20, none))
+	low := &Profile{Name: "low", AVIFEffort: 1}
+	assert.Equal(t, 1, wasm.effort(AVIF, 1<<20, low), "a lower one is honoured everywhere")
+
+	for _, e := range []*Engine{native, wasm} {
+		assert.Equal(t, 7, e.effort(WebP, 1<<20, saver), "WebP and JPEG XL keep the defaults measured for them")
+		assert.Equal(t, 3, e.effort(JXL, 1<<20, saver))
+	}
+}
