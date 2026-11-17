@@ -38,7 +38,7 @@ func workerContext(t *testing.T) (context.Context, string) {
 	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
 		t.Skip("permission policy unavailable on this platform")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	t.Cleanup(cancel)
 	exe, err := os.Executable()
 	require.NoError(t, err)

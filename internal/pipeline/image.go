@@ -431,7 +431,7 @@ func (p *Pipeline) runCPU(in img.Input) (res *img.Result, err error) {
 	}
 	res, err = p.optimize(ctx, in)
 	if err == nil && (ctx.Err() != nil || time.Until(deadline) <= 0) {
-		if res == nil {
+		if res == nil || bytes.Equal(res.Data, in.Raw) {
 			return nil, errTimeout
 		}
 		// the time ran out in the middle of the search: what was found is the

@@ -28,6 +28,9 @@ var compileErr error
 // RGBProfile describes PNG cHRM/gAMA or SDR CICP values as an ICC profile.
 // transfer is 13 (sRGB), 1/6 (BT.709/601), 8 (linear), or 0 (explicit gamma).
 func RGBProfile(ctx context.Context, chroma [8]float64, transfer int, gamma float64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	for _, v := range chroma {
 		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v >= 1 {
 			return nil, errors.New("colorcms: invalid chromaticity")
@@ -41,12 +44,12 @@ func RGBProfile(ctx context.Context, chroma [8]float64, transfer int, gamma floa
 	if transfer != 13 && transfer != 1 && transfer != 6 && transfer != 8 && (transfer != 0 || gamma <= 0 || gamma > 10 || math.IsNaN(gamma)) {
 		return nil, errors.New("colorcms: unsupported transfer")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
 	runtimeOnce.Do(initialize)
 	if compileErr != nil {
 		return nil, compileErr
 	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	m, err := engine.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName("").WithStartFunctions())
 	if err != nil {
 		return nil, err
@@ -86,6 +89,9 @@ func initialize() {
 // ToSRGB uses relative colorimetric ICC rendering, clipping colors outside sRGB.
 // RGB, grayscale and CMYK matrix/TRC or LUT profiles are supported. Alpha is copied unchanged.
 func ToSRGB(ctx context.Context, src image.Image, profile []byte) (image.Image, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(profile) < 132 || len(profile) > 8<<20 || string(profile[36:40]) != "acsp" {
 		return nil, errors.New("colorcms: invalid ICC profile")
 	}
@@ -100,12 +106,12 @@ func ToSRGB(ctx context.Context, src image.Image, profile []byte) (image.Image, 
 	if channels == 0 || n <= 0 || n > 16_000_000 {
 		return nil, errors.New("colorcms: unsupported color space or image size")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
 	runtimeOnce.Do(initialize)
 	if compileErr != nil {
 		return nil, fmt.Errorf("colorcms: compile: %w", compileErr)
 	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	m, err := engine.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName("").WithStartFunctions())
 	if err != nil {
 		return nil, err

@@ -7,6 +7,8 @@
     "node": "^22.23.5"
   },
   "scripts": {
+    "audit": "node scripts/audit.mjs",
+    "test:audit": "node --test scripts/audit.test.mjs",
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",

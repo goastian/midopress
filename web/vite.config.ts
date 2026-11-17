@@ -7,7 +7,17 @@ import { defineConfig } from 'vite'
 const admin = process.env.MIDOPRESS_ADMIN ?? 'http://127.0.0.1:9998'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), {
+    name: 'exclude-picomatch-from-browser',
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (output.type === 'chunk' && Object.keys(output.modules).some(id =>
+          id.replaceAll('\\', '/').includes('/node_modules/picomatch/'))) {
+          this.error('picomatch must remain a build-only dependency')
+        }
+      }
+    },
+  }],
   server: {
     host: true,
     port: 5173,
