@@ -98,7 +98,7 @@ numbers are in [Benchmark](#benchmark).
 
 ## Installation
 
-You need Go 1.27, and Node 22 to build the web interface (a build without it
+You need Go 1.27.4 or newer, and Node 22.23.5 to build the web interface (a build without it
 still works, and the administration server then says so). There is no C compiler, no cgo and no C library to install:
 the image codecs run as WebAssembly inside the binary, so it is built with
 `CGO_ENABLED=0` for Linux, macOS and Windows.

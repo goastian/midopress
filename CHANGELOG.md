@@ -7,6 +7,16 @@ The project uses [semantic versioning](https://semver.org/).
 
 Every byte that was not saved has a name now, and more of what can be shrunk is.
 
+### Security
+
+- Upgrade `andybalholm/brotli` from 1.2.6 to 1.3.0, including the decoder fix
+  released in 1.2.7 (GHSA-c9gr-gmg4-2vqv / GO-2026-6888).
+- Require Go 1.27.4 for the `net/http` security fix (GO-2026-6859), and use
+  Node 22.23.5 for the web build, Docker and CI. Update Go and web dependencies
+  and their lockfiles, add npm auditing to CI and weekly dependency updates.
+- Add a current Spanish feature inventory, progressive delivery plan and
+  Cloudflare/AI research under `docs/12` through `docs/15`.
+
 ### Added
 
 - Dashboard: the headline is the saving on what can be shrunk (images, text,
