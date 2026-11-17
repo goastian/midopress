@@ -47,6 +47,7 @@ type JPEG struct {
 	// ICC is the reassembled ICC profile from the APP2 chunks, nil when absent
 	// or when the chunk sequence is inconsistent.
 	ICC                                       []byte
+	HasICC                                    bool
 	HasEXIF, HasXMP, HasPhotoshop, HasComment bool
 	// Adobe reports an APP14 "Adobe" marker.
 	Adobe bool
@@ -169,6 +170,7 @@ type scan struct {
 	width, height, comps           int
 	progressive, hasSOF            bool
 	hasEXIF, hasXMP, hasPS, hasCOM bool
+	hasICC                         bool
 	adobe                          bool
 	adobeTransform                 int
 	orient                         int
@@ -270,6 +272,9 @@ func (s *scan) noteMetadata(seg *segment, wantICC bool) {
 			s.hasXMP = true
 		}
 	case markerAPP + 2:
+		if bytes.HasPrefix(d, iccPrefix) {
+			s.hasICC = true
+		}
 		if wantICC && len(d) >= len(iccPrefix)+2 && bytes.HasPrefix(d, iccPrefix) {
 			s.icc = append(s.icc, iccChunk{seq: d[12], count: d[13], data: d[14:]})
 		}
@@ -314,6 +319,7 @@ func ParseJPEG(raw []byte) (*JPEG, error) {
 		Progressive:    s.progressive,
 		Orientation:    s.orient,
 		ICC:            assembleICC(s.icc),
+		HasICC:         s.hasICC,
 		HasEXIF:        s.hasEXIF,
 		HasXMP:         s.hasXMP,
 		HasPhotoshop:   s.hasPS,

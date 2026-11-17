@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goastian/midopress/internal/codec"
+	"github.com/goastian/midopress/internal/codecworker"
 	"github.com/goastian/midopress/internal/fonts"
 	"github.com/goastian/midopress/internal/httpx"
 	"github.com/goastian/midopress/internal/negotiate"
@@ -89,6 +90,9 @@ func (p *Pipeline) textFlow(w http.ResponseWriter, req *http.Request, resp *http
 	if buffered {
 		return p.textBuffered(w, req, resp, mt, srcEnc, target, minify, asFont, learn, squeeze, fl, minifier)
 	}
+	if p.isolated() {
+		return p.passthrough(w, resp, PassStream)
+	}
 	return p.textStream(w, req, resp, target, learn, fl)
 }
 
@@ -152,7 +156,7 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, req *http.Request, resp *
 	if srcEnc != codec.None {
 		decoded := p.getBuf()
 		defer p.putBuf(decoded)
-		if err := p.text.Decode(srcEnc, wire, decoded, decodedCap); err != nil {
+		if err := p.decode(req.Context(), srcEnc, wire, decoded, decodedCap); err != nil {
 			reason := PassError
 			if errors.Is(err, codec.ErrTooLarge) {
 				reason = PassTooLarge
@@ -167,7 +171,7 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, req *http.Request, resp *
 	}
 
 	if asFont {
-		if e := p.convertFont(plain, resp.Header); e != nil {
+		if e := p.convertFontContext(req.Context(), plain, resp.Header); e != nil {
 			if !p.worthIt(len(e.Data), len(wire)) {
 				return p.writeBuffered(w, resp, wire, in.n, PassNotSmaller)
 			}
@@ -190,7 +194,16 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, req *http.Request, resp *
 		min := p.getBuf()
 		defer p.putBuf(min)
 		if p.acquireCPU() {
-			err := minifier.Minify(mt, min, plain)
+			var err error
+			if p.isolated() {
+				var data []byte
+				data, err = p.minify(req.Context(), fl, mt, plain)
+				if err == nil {
+					_, err = min.Write(data)
+				}
+			} else {
+				err = minifier.Minify(mt, min, plain)
+			}
 			p.releaseCPU()
 			if err == nil && min.Len() > 0 {
 				minified = min.Len() < len(plain)
@@ -293,7 +306,17 @@ func (p *Pipeline) squeezeLater(fl *flow, target codec.Encoding, plain []byte, h
 	expires := p.expiry(h)
 	p.bg.submitFunc(key, int64(len(body)), func(ctx context.Context) {
 		var comp bytes.Buffer
-		if err := codecs.Compress(target, &comp, body); err != nil {
+		var err error
+		if p.isolated() {
+			var data []byte
+			data, err = p.encodeText(ctx, fl, target, body, true)
+			if err == nil {
+				_, err = comp.Write(data)
+			}
+		} else {
+			err = codecs.Compress(target, &comp, body)
+		}
+		if err != nil {
 			p.recordBackground("failed")
 			return
 		}
@@ -324,7 +347,17 @@ func (p *Pipeline) compress(fl *flow, target codec.Encoding, plain []byte, stati
 				return nil, errBusy
 			}
 			var comp bytes.Buffer
-			if err := pair[1].Compress(target, &comp, plain); err != nil {
+			var err error
+			if p.isolated() {
+				var data []byte
+				data, err = p.encodeText(p.bg.ctx, fl, target, plain, true)
+				if err == nil {
+					_, err = comp.Write(data)
+				}
+			} else {
+				err = pair[1].Compress(target, &comp, plain)
+			}
+			if err != nil {
 				return nil, err
 			}
 			p.cache.Add(key, &xcache.Entry{Data: comp.Bytes(), Expires: p.expiry(h)})
@@ -334,6 +367,9 @@ func (p *Pipeline) compress(fl *flow, target codec.Encoding, plain []byte, stati
 	}
 	comp := p.getBuf()
 	defer p.putBuf(comp)
+	if p.isolated() {
+		return p.encodeText(p.bg.ctx, fl, target, plain, false)
+	}
 	if err := pair[0].Compress(target, comp, plain); err != nil {
 		return nil, err
 	}
@@ -343,8 +379,12 @@ func (p *Pipeline) compress(fl *flow, target codec.Encoding, plain []byte, stati
 // convertFont turns a TTF, OTF or WOFF font into WOFF2, or returns nil when it
 // can not be done safely. Results are kept by content.
 func (p *Pipeline) convertFont(plain []byte, h http.Header) *xcache.Entry {
+	return p.convertFontContext(p.bg.ctx, plain, h)
+}
+
+func (p *Pipeline) convertFontContext(ctx context.Context, plain []byte, h http.Header) *xcache.Entry {
 	sum := sha256.Sum256(plain)
-	key := "font|" + string(sum[:])
+	key := "font-v2-sandbox|" + string(sum[:])
 	if e, ok := p.cache.Get(key); ok {
 		if e.Keep {
 			return nil
@@ -355,7 +395,13 @@ func (p *Pipeline) convertFont(plain []byte, h http.Header) *xcache.Entry {
 		return nil
 	}
 	defer p.releaseCPU()
-	out, err := fonts.ToWOFF2(plain)
+	var out []byte
+	var err error
+	if p.isolated() {
+		out, err = codecworker.Font(ctx, p.cfg.WorkerExecutable, plain)
+	} else {
+		out, err = fonts.ToWOFF2(plain)
+	}
 	if err != nil {
 		p.cache.Add(key, &xcache.Entry{Keep: true, Expires: p.expiry(h)})
 		return nil

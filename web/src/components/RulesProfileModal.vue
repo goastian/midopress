@@ -43,9 +43,15 @@ const boolFields: { key: BoolKey; label: string }[] = [
   { key: 'grayscale', label: 'Grayscale (intentionally removes colour)' },
   { key: 'resize_to_viewport', label: 'resize_to_viewport' },
   { key: 'quantize_png', label: 'quantize_png' },
-  { key: 'animated_to_still', label: 'animated_to_still' },
+  { key: 'animated_to_still', label: 'animated_to_still (legacy; frame verification preserves animation)' },
   { key: 'minify_js', label: 'minify_js' },
 ]
+
+function setQualityPolicy(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  if (!value) delete ov.quality_policy
+  else ov.quality_policy = value as 'metric' | 'pixels'
+}
 const textFields: { key: TextKey; label: string; hint: string }[] = [
   { key: 'brotli', label: 'text.brotli', hint: '0 to 11' },
   { key: 'gzip', label: 'text.gzip', hint: '1 to 9' },
@@ -191,6 +197,30 @@ async function remove() {
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td>Quality policy</td>
+              <td>
+                <select class="select compact" :value="ov.quality_policy ?? ''" aria-label="Quality policy" @change="setQualityPolicy">
+                  <option value="">{{ builtin ? 'built-in' : 'inherit' }}</option>
+                  <option value="metric">Verified full-resolution metric</option>
+                  <option value="pixels">Exact decoded pixels</option>
+                </select>
+                <p class="hint">Pixels preserves decoded pixels and animation timing or keeps the original. It disables resizing and intentional appearance changes. Metric verifies every converted frame against the configured threshold.</p>
+              </td>
+              <td class="mono muted">{{ effective('quality_policy') }}</td>
+            </tr>
+            <tr>
+              <td>Colour policy</td>
+              <td>
+                <select class="select compact" v-model="ov.color_policy" aria-label="Colour policy">
+                  <option :value="undefined">{{ builtin ? 'built-in' : 'inherit' }}</option>
+                  <option value="preserve">Preserve original colour space</option>
+                  <option value="srgb">Explicitly map to sRGB</option>
+                </select>
+                <p class="hint">Preserve retains wide-gamut source colour. sRGB uses portable ICC colour management; colours outside sRGB can change and are reported as an appearance change.</p>
+              </td>
+              <td class="mono muted">{{ effective('color_policy') }}</td>
+            </tr>
             <tr v-for="f in numFields" :key="f.key">
               <td class="mono">{{ f.label }}</td>
               <td>

@@ -12,9 +12,11 @@ import (
 type ProfileOverride struct {
 	// Base is the profile to start from, balanced when empty. For a built-in
 	// name it defaults to that profile itself.
-	Base             string `yaml:"base" json:"base,omitempty"`
-	Grayscale        *bool  `yaml:"grayscale" json:"grayscale,omitempty"`
-	PlaceholderWidth *int   `yaml:"placeholder_width" json:"placeholder_width,omitempty"`
+	Base             string  `yaml:"base" json:"base,omitempty"`
+	Grayscale        *bool   `yaml:"grayscale" json:"grayscale,omitempty"`
+	PlaceholderWidth *int    `yaml:"placeholder_width" json:"placeholder_width,omitempty"`
+	QualityPolicy    *string `yaml:"quality_policy" json:"quality_policy,omitempty"`
+	ColorPolicy      *string `yaml:"color_policy" json:"color_policy,omitempty"`
 
 	TargetDSSIM       *float64      `yaml:"target_dssim" json:"target_dssim,omitempty"`
 	TargetSSIM        *float64      `yaml:"target_ssim" json:"target_ssim,omitempty"`
@@ -120,6 +122,22 @@ func BuildProfiles(overrides map[string]ProfileOverride) (map[string]*Profile, e
 
 func apply(p *Profile, o ProfileOverride) error {
 	var errs []error
+	if o.ColorPolicy != nil {
+		switch *o.ColorPolicy {
+		case "preserve", "srgb":
+			p.ColorPolicy = *o.ColorPolicy
+		default:
+			errs = append(errs, errors.New("color_policy must be preserve or srgb"))
+		}
+	}
+	if o.QualityPolicy != nil {
+		switch *o.QualityPolicy {
+		case "metric", "pixels":
+			p.QualityPolicy = *o.QualityPolicy
+		default:
+			errs = append(errs, errors.New("quality_policy must be metric or pixels"))
+		}
+	}
 	if o.Grayscale != nil {
 		p.Grayscale = *o.Grayscale
 	}
@@ -130,7 +148,7 @@ func apply(p *Profile, o ProfileOverride) error {
 			p.PlaceholderWidth = *o.PlaceholderWidth
 		}
 	}
-	if p.Lossless && (p.Grayscale || p.PlaceholderWidth > 0) {
+	if (p.Lossless || p.QualityPolicy == "pixels") && (p.Grayscale || p.PlaceholderWidth > 0) {
 		errs = append(errs, errors.New("lossless profiles cannot enable grayscale or placeholders"))
 	}
 	check := func(name string, v *float64, lo, hi float64) {

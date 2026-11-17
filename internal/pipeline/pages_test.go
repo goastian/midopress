@@ -47,9 +47,10 @@ func TestAPageTellsHowWideItsImagesAre(t *testing.T) {
 		require.Equal(t, Transformed, out.Reason)
 
 		rec, out := run(p, pageReq("/photos/big.jpg", "Accept", "image/webp"), newResp("image/jpeg", big))
-		require.Equal(t, Transformed, out.Reason)
+		assert.Equal(t, 100, p.pages.width(requestURL(pageReq("/photos/big.jpg"))))
+		assertImagePolicy(t, p, big, rec, out)
 		w := decodedWidth(t, rec.Body.Bytes(), rec.Header().Get("Content-Type"))
-		assert.Equal(t, 200, w, "100 CSS pixels at a density of 2")
+		assert.Contains(t, []int{200, 300}, w, "100 CSS pixels at DPR2; full size is retained when shrinking fails quality")
 
 		// an image the page did not size is left at its size
 		rec, out = run(p, pageReq("/photos/free.jpg", "Accept", "image/webp"), newResp("image/jpeg", big))
@@ -61,8 +62,8 @@ func TestAPageTellsHowWideItsImagesAre(t *testing.T) {
 		p := newPipeline(func(c *Config) { c.Profile = img.ProfileSaver })
 		run(p, pageReq("/index.html", "Accept-Encoding", "gzip"), newResp("text/html", html))
 		rec, out := run(p, pageReq("/photos/big.jpg", "Accept", "image/webp", "X-MidoPress-Viewport", "150x1"), newResp("image/jpeg", big))
-		require.Equal(t, Transformed, out.Reason)
-		assert.Equal(t, 150, decodedWidth(t, rec.Body.Bytes(), rec.Header().Get("Content-Type")))
+		assertImagePolicy(t, p, big, rec, out)
+		assert.Contains(t, []int{150, 300}, decodedWidth(t, rec.Body.Bytes(), rec.Header().Get("Content-Type")))
 	})
 
 	t.Run("a profile that does not resize never does", func(t *testing.T) {
@@ -83,8 +84,9 @@ func TestAPageTellsHowWideItsImagesAre(t *testing.T) {
 	t.Run("the density it assumes can be changed", func(t *testing.T) {
 		p := newPipeline(func(c *Config) { c.Profile = img.ProfileSaver; c.Image.HintDPR = 1 })
 		run(p, pageReq("/index.html", "Accept-Encoding", "gzip"), newResp("text/html", html))
-		rec, _ := run(p, pageReq("/photos/big.jpg", "Accept", "image/webp"), newResp("image/jpeg", big))
-		assert.Equal(t, 100, decodedWidth(t, rec.Body.Bytes(), rec.Header().Get("Content-Type")))
+		rec, out := run(p, pageReq("/photos/big.jpg", "Accept", "image/webp"), newResp("image/jpeg", big))
+		assertImagePolicy(t, p, big, rec, out)
+		assert.Contains(t, []int{100, 300}, decodedWidth(t, rec.Body.Bytes(), rec.Header().Get("Content-Type")))
 	})
 
 	t.Run("a page that comes as a stream is read before it is sent on", func(t *testing.T) {
@@ -95,8 +97,8 @@ func TestAPageTellsHowWideItsImagesAre(t *testing.T) {
 		require.Equal(t, Transformed, out.Reason)
 		require.NotZero(t, rec.Body.Len())
 		rec, out = run(p, pageReq("/photos/big.jpg", "Accept", "image/webp"), newResp("image/jpeg", big))
-		require.Equal(t, Transformed, out.Reason)
-		assert.Equal(t, 200, decodedWidth(t, rec.Body.Bytes(), rec.Header().Get("Content-Type")))
+		assertImagePolicy(t, p, big, rec, out)
+		assert.Contains(t, []int{200, 300}, decodedWidth(t, rec.Body.Bytes(), rec.Header().Get("Content-Type")))
 	})
 }
 
@@ -126,8 +128,8 @@ func TestAStreamedPageIsKnownWhenItsFirstPartIsSent(t *testing.T) {
 	// the rest of the page has not arrived; the image is already known
 	require.Eventually(t, func() bool { return p.pages.width(requestURL(pageReq("/photos/early.jpg"))) > 0 }, 5*time.Second, 5*time.Millisecond)
 	rec2, out := run(p, pageReq("/photos/early.jpg", "Accept", "image/webp"), newResp("image/jpeg", big))
-	require.Equal(t, Transformed, out.Reason)
-	assert.Equal(t, 200, decodedWidth(t, rec2.Body.Bytes(), rec2.Header().Get("Content-Type")))
+	assertImagePolicy(t, p, big, rec2, out)
+	assert.Contains(t, []int{200, 300}, decodedWidth(t, rec2.Body.Bytes(), rec2.Header().Get("Content-Type")))
 
 	_, _ = pw.Write(tail.Bytes())
 	_ = pw.Close()

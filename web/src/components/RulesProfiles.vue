@@ -37,8 +37,8 @@ function kind(p: ProfileInfo) {
   return p.modified ? 'built-in, changed' : 'built-in'
 }
 function animated(p: ProfileInfo) {
-  if (p.animated_to_still) return 'still'
-  return p.animated_quality > 0 ? `q${p.animated_quality}` : 'as is'
+  if (p.quality_policy === 'pixels') return 'exact frames'
+  return p.animated_quality > 0 ? `q${p.animated_quality}, verified` : 'as is'
 }
 </script>
 
@@ -80,7 +80,7 @@ function animated(p: ProfileInfo) {
               <span v-if="p.name === cfg.default_profile" class="tag ok defbadge">default</span>
             </td>
             <td class="muted nowrap hide-sm">{{ kind(p) }}{{ p.lossless ? ', lossless' : '' }}</td>
-            <td class="r mono">{{ p.lossless ? '-' : p.target_dssim }}</td>
+            <td class="r mono">{{ p.lossless || p.quality_policy === 'pixels' ? '-' : p.target_dssim }}</td>
             <td class="mono nowrap">{{ p.formats.join(' ') }}</td>
             <td class="hide-sm">{{ p.resize_to_viewport ? 'to viewport' : 'no' }}</td>
             <td class="hide-sm">{{ p.quantize_png ? 'yes' : 'no' }}</td>

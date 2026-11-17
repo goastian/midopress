@@ -2,6 +2,7 @@ package img
 
 import (
 	"image"
+	"image/color"
 	"image/draw"
 
 	xdraw "golang.org/x/image/draw"
@@ -63,9 +64,9 @@ func samePixels(a, b image.Image) bool {
 	}
 	for y := 0; y < a.Bounds().Dy(); y++ {
 		for x := 0; x < a.Bounds().Dx(); x++ {
-			ar, ag, ab, aa := a.At(a.Bounds().Min.X+x, a.Bounds().Min.Y+y).RGBA()
-			br, bg, bb, ba := b.At(b.Bounds().Min.X+x, b.Bounds().Min.Y+y).RGBA()
-			if ar != br || ag != bg || ab != bb || aa != ba {
+			ac := straightPixel(a.At(a.Bounds().Min.X+x, a.Bounds().Min.Y+y))
+			bc := straightPixel(b.At(b.Bounds().Min.X+x, b.Bounds().Min.Y+y))
+			if ac != bc {
 				return false
 			}
 		}
@@ -73,11 +74,28 @@ func samePixels(a, b image.Image) bool {
 	return true
 }
 
+func straightPixel(c color.Color) color.NRGBA64 {
+	switch v := c.(type) {
+	case color.NRGBA:
+		return color.NRGBA64{R: uint16(v.R) * 257, G: uint16(v.G) * 257, B: uint16(v.B) * 257, A: uint16(v.A) * 257}
+	case color.NRGBA64:
+		return v
+	default:
+		return color.NRGBA64Model.Convert(c).(color.NRGBA64)
+	}
+}
+
 // Orient applies an EXIF orientation (1..8) to the pixels, so that the result
 // can be saved with no orientation tag and still display upright.
 func Orient(m image.Image, orientation int) image.Image {
 	if orientation < 2 || orientation > 8 {
 		return m
+	}
+	// Preserve 16-bit color-managed pixels; Normalize is deliberately 8-bit
+	// because the encoders also accept 8-bit images.
+	switch m.(type) {
+	case *image.NRGBA64, *image.RGBA64, *image.Gray16:
+		return orientDeep(m, orientation)
 	}
 	norm, alpha := Normalize(m)
 	var pix []byte
@@ -123,6 +141,38 @@ func Orient(m image.Image, orientation int) image.Image {
 		return &image.NRGBA{Pix: out, Stride: dw * pixelBytes, Rect: r}
 	}
 	return &image.RGBA{Pix: out, Stride: dw * pixelBytes, Rect: r}
+}
+
+func orientDeep(src image.Image, orientation int) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if orientation >= 5 {
+		w, h = h, w
+	}
+	dst := image.NewNRGBA64(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			sx, sy := x, y
+			switch orientation {
+			case 2:
+				sx = b.Dx() - 1 - x
+			case 3:
+				sx, sy = b.Dx()-1-x, b.Dy()-1-y
+			case 4:
+				sy = b.Dy() - 1 - y
+			case 5:
+				sx, sy = y, x
+			case 6:
+				sx, sy = y, b.Dy()-1-x
+			case 7:
+				sx, sy = b.Dx()-1-y, b.Dy()-1-x
+			case 8:
+				sx, sy = b.Dx()-1-y, x
+			}
+			dst.SetNRGBA64(x, y, color.NRGBA64Model.Convert(src.At(b.Min.X+sx, b.Min.Y+sy)).(color.NRGBA64))
+		}
+	}
+	return dst
 }
 
 // Resize scales m to w by h with a Catmull-Rom filter, which keeps detail when

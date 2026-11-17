@@ -1,0 +1,12 @@
+<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="ui.css"><title>MidoPress · Configuración</title><body>
+<h1>MidoPress Images</h1>
+<p>Obtén una credencial limitada en Images del panel. Solo se envían al servidor direcciones de imágenes públicas y sus tamaños; se omiten cookies y credenciales de navegación.</p>
+<form id="settings">
+<label>API de imágenes<input id="endpoint" type="url" value="http://127.0.0.1:9997" required></label>
+<label>Credencial limitada<input id="token" type="password" autocomplete="off" spellcheck="false" required></label>
+<label>Perfil<select id="profile"><option>balanced</option><option>saver</option><option>extreme</option><option>lossless</option></select></label>
+<button type="submit">Guardar</button><button type="button" id="clear">Borrar credencial</button>
+</form>
+<output id="status" role="status"></output><p id="scope" class="muted"></p>
+<p class="muted">Se activa por pestaña desde el botón de la extensión. Mide elementos visibles, fondos CSS y cambios de tamaño. La primera página puede haber descargado ya su imagen original; esta versión no promete evitar esa descarga inicial.</p>
+<script src="client.js"></script><script src="options.js"></script></body></html>

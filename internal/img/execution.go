@@ -17,15 +17,17 @@ func RuntimeInfo(be Backend) map[string]CodecRuntime {
 				info.Reason = "codec package loaded a shared library; executes native code in the calling process"
 			case path == "wasm":
 				info.Reason = "embedded WebAssembly codec; no native codec selected"
+			case path == "go-wasm2go":
+				info.Reason = "codec WebAssembly was translated to Go at build time; executes generated Go code, not a WASM sandbox"
 			default:
 				info.Reason = "Go implementation"
 			}
 			if f == JPEG {
 				info.Decoder = "go"
 			}
-			if f == JXL && !be.Supports(JXL) {
-				info.Encoder = "disabled"
-				info.Reason = "shared-library JPEG XL pixel encoding is disabled because its output cursor is unsafe under Go garbage collection; reversible JPEG recompression uses a separate binding"
+			if f == JXL {
+				info.Encoder, info.Decoder = "wasm", "wasm"
+				info.Reason = "embedded libjxl WASI module, with bounded linear memory and no filesystem or network mounts; reversible JPEG recompression selects native when available and otherwise the embedded WASM implementation"
 			}
 		}
 		out[f.String()] = info
@@ -44,8 +46,10 @@ func ExecutionPath(be Backend, f Format) string {
 		return "native"
 	}
 	switch f {
-	case JPEG, WebP, AVIF, JXL:
+	case JXL:
 		return "wasm"
+	case JPEG, WebP, AVIF:
+		return gen2brainExecutionPath(f)
 	default:
 		return "go"
 	}

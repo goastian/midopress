@@ -8,14 +8,12 @@ import (
 
 	"github.com/gen2brain/avif"
 	"github.com/gen2brain/jpegli"
-	"github.com/gen2brain/jpegxl"
 	"github.com/gen2brain/webp"
+	"github.com/goastian/midopress/internal/jxlcodec"
 )
 
-// WASM is the default backend. It needs no C library and no cgo: the codecs run
-// as WebAssembly inside the process. If the shared libraries of libwebp,
-// libavif or libjxl happen to be installed, the codec packages load them and run
-// native code instead, with no change on our side.
+// WASM needs no C library or cgo. JPEG XL pixels always use the embedded WASI
+// module; the other codec packages can select native libraries or generated Go.
 type WASM struct{}
 
 // NewWASM returns the default backend.
@@ -25,10 +23,8 @@ func (*WASM) Name() string { return "wasm" }
 
 func (*WASM) Supports(f Format) bool {
 	switch f {
-	case JPEG, WebP, AVIF:
+	case JPEG, WebP, AVIF, JXL:
 		return true
-	case JXL:
-		return jpegxl.Dynamic() != nil
 	}
 	return false
 }
@@ -39,8 +35,6 @@ func (*WASM) Native(f Format) bool {
 		return webp.Dynamic() == nil
 	case AVIF:
 		return avif.Dynamic() == nil
-	case JXL:
-		return jpegxl.Dynamic() == nil
 	}
 	return false
 }
@@ -82,10 +76,7 @@ func (*WASM) Encode(f Format, m image.Image, o EncodeOptions) ([]byte, error) {
 		}
 		err = avif.Encode(&b, m, avif.Options{Quality: o.Quality, QualityAlpha: o.Quality, Speed: avifSpeed(o.Effort), ChromaSubsampling: sub, Lossless: o.Lossless})
 	case JXL:
-		if jpegxl.Dynamic() == nil {
-			return nil, fmt.Errorf("%w: native JPEG XL pixel encoder has an unsafe output cursor", ErrUnsupported)
-		}
-		err = jpegxl.Encode(&b, m, jpegxl.Options{Quality: o.Quality, Effort: jxlEffort(o.Effort), Lossless: o.Lossless})
+		return jxlcodec.Encode([]image.Image{m}, nil, 0, jxlcodec.Options{Quality: o.Quality, Effort: jxlEffort(o.Effort), Lossless: o.Lossless})
 	case JPEG:
 		sub := o.Subsampling
 		if sub == 0 {
@@ -113,6 +104,9 @@ func (*WASM) Encode(f Format, m image.Image, o EncodeOptions) ([]byte, error) {
 }
 
 func (*WASM) EncodeAnimation(f Format, a *Animation, o EncodeOptions) ([]byte, error) {
+	if f == JXL {
+		return jxlcodec.Encode(a.Frames, a.DelaysMS, a.LoopCount, jxlcodec.Options{Quality: o.Quality, Effort: jxlEffort(o.Effort), Lossless: o.Lossless})
+	}
 	var b bytes.Buffer
 	var err error
 	switch f {
@@ -153,12 +147,23 @@ func (*WASM) Decode(f Format, data []byte) (image.Image, error) {
 	case AVIF:
 		return avif.Decode(r)
 	case JXL:
-		return jpegxl.Decode(r)
+		a, err := jxlcodec.Decode(data, false)
+		if err != nil {
+			return nil, err
+		}
+		return a.Frames[0], nil
 	}
 	return nil, fmt.Errorf("img: can not decode %s", f)
 }
 
 func (*WASM) DecodeAnimation(f Format, data []byte) (*Animation, error) {
+	if f == JXL {
+		a, err := jxlcodec.Decode(data, true)
+		if err != nil {
+			return nil, err
+		}
+		return &Animation{Frames: a.Frames, DelaysMS: a.DelaysMS, LoopCount: a.LoopCount}, nil
+	}
 	if f != WebP {
 		return nil, ErrUnsupported
 	}

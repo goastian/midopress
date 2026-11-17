@@ -10,6 +10,7 @@ import (
 type AVIF struct {
 	Width, Height int
 	invalidSize   bool
+	invalidColor  bool
 	// Animated is an image sequence ("avis"), which is not a still.
 	Animated bool
 	// Depth is the bits per channel, 8 when the file does not say.
@@ -111,6 +112,23 @@ func ParseAVIF(raw []byte) (*AVIF, error) {
 	if !gotFtyp || !gotSize || a.invalidSize {
 		return nil, errBadAVIF
 	}
+	if props, associated, err := primaryAVIFProperties(raw); err != nil {
+		return nil, err
+	} else if associated {
+		// Color and presentation belong to the primary item. An alpha plane,
+		// thumbnail or unused property must not override its profile.
+		primary := &AVIF{Depth: 8, Animated: a.Animated}
+		for _, p := range props {
+			primary.property(p)
+		}
+		if primary.Width == 0 || primary.invalidSize {
+			return nil, errBadAVIF
+		}
+		a = primary
+	}
+	if a.invalidColor {
+		return nil, errBadAVIF
+	}
 	return a, nil
 }
 
@@ -121,47 +139,57 @@ func ParseAVIF(raw []byte) (*AVIF, error) {
 func (a *AVIF) properties(ipco []byte) bool {
 	var found bool
 	for _, p := range isoBoxes(ipco) {
-		switch p.typ {
-		case "ispe":
-			if len(p.body) >= 12 {
-				if binary.BigEndian.Uint32(p.body[4:]) > 1<<24 || binary.BigEndian.Uint32(p.body[8:]) > 1<<24 {
-					a.invalidSize = true
-					continue
-				}
-				w := int(binary.BigEndian.Uint32(p.body[4:]))
-				h := int(binary.BigEndian.Uint32(p.body[8:]))
-				if w > 0 && h > 0 && int64(w)*int64(h) > int64(a.Width)*int64(a.Height) {
-					a.Width, a.Height = w, h
-				}
-				found = true
+		found = a.property(p) || found
+	}
+	return found
+}
+
+func (a *AVIF) property(p isoBox) bool {
+	found := false
+	switch p.typ {
+	case "ispe":
+		if len(p.body) >= 12 {
+			if binary.BigEndian.Uint32(p.body[4:]) > 1<<24 || binary.BigEndian.Uint32(p.body[8:]) > 1<<24 {
+				a.invalidSize = true
+				return false
 			}
-		case "pixi":
-			if len(p.body) >= 6 {
-				n := int(p.body[4])
-				for i := 0; i < n && 5+i < len(p.body); i++ {
-					a.Depth = max(a.Depth, int(p.body[5+i]))
-				}
+			w := int(binary.BigEndian.Uint32(p.body[4:]))
+			h := int(binary.BigEndian.Uint32(p.body[8:]))
+			if w > 0 && h > 0 && int64(w)*int64(h) > int64(a.Width)*int64(a.Height) {
+				a.Width, a.Height = w, h
 			}
-		case "colr":
-			if len(p.body) < 4 {
-				continue
-			}
-			switch string(p.body[:4]) {
-			case "nclx":
-				if len(p.body) >= 11 {
-					a.NCLX = append(a.NCLX, AVIFColour{
-						Primaries: int(binary.BigEndian.Uint16(p.body[4:])),
-						Transfer:  int(binary.BigEndian.Uint16(p.body[6:])),
-						Matrix:    int(binary.BigEndian.Uint16(p.body[8:])),
-						FullRange: p.body[10]&0x80 != 0,
-					})
-				}
-			case "rICC", "prof":
-				a.ICC = p.body[4:]
-			}
-		case "irot", "imir", "clap":
-			a.Transformed = true
+			found = true
 		}
+	case "pixi":
+		if len(p.body) >= 6 {
+			n := int(p.body[4])
+			for i := 0; i < n && 5+i < len(p.body); i++ {
+				a.Depth = max(a.Depth, int(p.body[5+i]))
+			}
+		}
+	case "colr":
+		if len(p.body) < 4 {
+			return false
+		}
+		switch string(p.body[:4]) {
+		case "nclx":
+			if len(p.body) >= 11 {
+				a.NCLX = append(a.NCLX, AVIFColour{
+					Primaries: int(binary.BigEndian.Uint16(p.body[4:])),
+					Transfer:  int(binary.BigEndian.Uint16(p.body[6:])),
+					Matrix:    int(binary.BigEndian.Uint16(p.body[8:])),
+					FullRange: p.body[10]&0x80 != 0,
+				})
+			}
+		case "rICC", "prof":
+			if a.ICC != nil {
+				a.invalidColor = true // contradictory primary color descriptions
+				return false
+			}
+			a.ICC = p.body[4:]
+		}
+	case "irot", "imir", "clap":
+		a.Transformed = true
 	}
 	return found
 }

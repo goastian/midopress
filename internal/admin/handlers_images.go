@@ -39,3 +39,20 @@ func (s *Server) handleSignImage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"optimized_url": optimized, "original_url": original,
 		"fallback_url": body.URL, "expires": expires})
 }
+
+func (s *Server) handleImageCredential(w http.ResponseWriter, r *http.Request) {
+	if s.d.Images == nil {
+		writeError(w, http.StatusConflict, "images_disabled", "enable the image API first")
+		return
+	}
+	var scope imageapi.CredentialScope
+	if !readJSON(w, r, &scope) {
+		return
+	}
+	token, grant, err := s.d.Images.MintCredential(scope)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_scope", "select public image hosts, known profiles, valid size limits and an expiry between 60 and 3600 seconds")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "scope": grant, "public_url": s.d.Config().ImageAPI.PublicURL})
+}

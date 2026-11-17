@@ -90,7 +90,10 @@ func TestParseJXLHeader(t *testing.T) {
 	t.Run("all default is 8 bit sRGB", func(t *testing.T) {
 		j, err := ParseJXL(new(bitWriter).size(640, 480).flag(true).bytes())
 		require.NoError(t, err)
-		assert.Equal(t, JXL{Width: 640, Height: 480}, *j)
+		assert.Equal(t, [2]int{640, 480}, [2]int{j.Width, j.Height})
+		assert.Equal(t, 8, j.BitsPerSample)
+		assert.Equal(t, 1, j.Orientation)
+		assert.True(t, j.OriginalSRGB)
 	})
 	t.Run("colour that is the default, said or written out", func(t *testing.T) {
 		for name, c := range map[string]func(*bitWriter){

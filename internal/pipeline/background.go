@@ -151,7 +151,7 @@ func (b *background) run(j bgJob) {
 		return
 	}
 	j.in.Budget = 0
-	res, err := p.engine.Optimize(ctx, j.in)
+	res, err := p.optimize(ctx, j.in)
 	if err != nil {
 		p.recordBackground("failed")
 		if errors.Is(err, img.ErrBudget) || errors.Is(err, img.ErrUnsupported) {

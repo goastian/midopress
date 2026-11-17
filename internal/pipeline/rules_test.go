@@ -51,14 +51,14 @@ func TestRuleChoosesTheProfile(t *testing.T) {
 	req := newReq("Accept", "image/webp", "Sec-CH-Viewport-Width", "400", "Sec-CH-DPR", "1")
 	req.URL.Host = "cdn.example.com"
 	rec, out := run(p, req, newResp("image/jpeg", jpg))
-	require.Equal(t, Transformed, out.Reason)
-	extreme := rec.Body.Len()
+	assertImagePolicy(t, p, jpg, rec, out)
+	assert.Equal(t, img.ProfileExtreme, out.Profile)
 
 	req = newReq("Accept", "image/webp", "Sec-CH-Viewport-Width", "400", "Sec-CH-DPR", "1")
 	req.URL.Host = "other.example.com"
 	rec, out = run(p, req, newResp("image/jpeg", jpg))
-	require.Equal(t, Transformed, out.Reason)
-	assert.Less(t, extreme, rec.Body.Len()/2, "the rule made this one extreme, the other stayed balanced and kept its size")
+	assertImagePolicy(t, p, jpg, rec, out)
+	assert.Equal(t, img.ProfileBalanced, out.Profile)
 }
 
 func TestRuleSetChangesMinification(t *testing.T) {
@@ -111,10 +111,10 @@ func TestRuleSetImagesAndText(t *testing.T) {
 	req = newReq()
 	req.URL.Path = "/q20"
 	low, out := run(p, req, newResp("image/jpeg", jpg))
-	require.Equal(t, Transformed, out.Reason)
+	assertImagePolicy(t, p, jpg, low, out)
+	assert.Equal(t, jpg, low.Body.Bytes(), "a low fixed quality rule still respects the profile threshold")
 	high, out := run(p, newReq("X-MidoPress-Quality", "90"), newResp("image/jpeg", jpg))
-	require.Equal(t, Transformed, out.Reason)
-	assert.Less(t, low.Body.Len(), high.Body.Len())
+	assertImagePolicy(t, p, jpg, high, out)
 }
 
 func TestHostDecision(t *testing.T) {
@@ -138,13 +138,14 @@ func TestDeviceProfileWinsOverTheHeader(t *testing.T) {
 	hdr := []string{"Accept", "image/webp", "X-MidoPress-Profile", "balanced", "Sec-CH-Viewport-Width", "300", "Sec-CH-DPR", "1"}
 	req := newReq(hdr...)
 	balanced, out := run(p, req, newResp("image/jpeg", jpg))
-	require.Equal(t, Transformed, out.Reason)
+	assertImagePolicy(t, p, jpg, balanced, out)
+	assert.Equal(t, img.ProfileBalanced, out.Profile)
 
 	req = newReq(hdr...)
 	req = req.WithContext(WithClient(context.Background(), Client{Device: "phone", Profile: "extreme"}))
 	extreme, out := run(p, req, newResp("image/jpeg", jpg))
-	require.Equal(t, Transformed, out.Reason)
-	assert.Less(t, extreme.Body.Len(), balanced.Body.Len()/2)
+	assertImagePolicy(t, p, jpg, extreme, out)
+	assert.Equal(t, img.ProfileExtreme, out.Profile)
 	assert.Equal(t, Client{Device: "phone", Profile: "extreme"}, ClientFrom(req.Context()))
 	assert.Equal(t, Client{}, ClientFrom(context.Background()))
 }

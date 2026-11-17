@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "MidoPress Images",
+  "version": "0.1.0",
+  "description": "Optimize public images using measured browser layout and a limited MidoPress credential.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["https://*/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html", "default_title": "MidoPress Images"},
+  "options_page": "options.html",
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'"}
+}

@@ -7,6 +7,11 @@ type Profile struct {
 	Name             string
 	Grayscale        bool
 	PlaceholderWidth int
+	// QualityPolicy is metric (full-resolution thresholds) or pixels (exact decoded pixels).
+	QualityPolicy string
+	// ColorPolicy preserves source color by default. srgb explicitly allows
+	// relative-colorimetric conversion and clipping to the sRGB gamut.
+	ColorPolicy string
 
 	// Lossless allows only bit-exact work: stripping metadata, optimizing PNG,
 	// lossless recoding. Nothing else is touched.
@@ -36,7 +41,8 @@ type Profile struct {
 	// QuantizePNG allows reducing a graphic to 256 colours when that is
 	// much smaller.
 	QuantizePNG bool
-	// AnimatedToStill replaces an animation with its first frame.
+	// AnimatedToStill is a legacy configuration field. Mandatory full-frame
+	// verification prevents it from discarding any animation frame.
 	AnimatedToStill bool
 	// AnimatedQuality is the quality of lossy animations, 0 for lossless.
 	AnimatedQuality int
@@ -100,25 +106,25 @@ func Profiles() map[string]*Profile {
 	formats := []Format{JXL, AVIF, WebP}
 	return map[string]*Profile{
 		ProfileLossless: {
-			Name: ProfileLossless, Lossless: true, TargetSSIM: 1, TargetSSIMULACRA2: 100, Formats: formats,
+			Name: ProfileLossless, QualityPolicy: "pixels", ColorPolicy: "preserve", Lossless: true, TargetSSIM: 1, TargetSSIMULACRA2: 100, Formats: formats,
 			PhotoColors: 1 << 30,
 			Text:        TextLevels{Brotli: 6, Gzip: 6, Zstd: 3, BrotliStatic: 9, StaticWaitMS: 300},
 		},
 		ProfileBalanced: {
-			Name: ProfileBalanced, TargetDSSIM: 0.002, TargetSSIM: 0.975, TargetSSIMULACRA2: 85, Attempts: 4, Formats: formats,
+			Name: ProfileBalanced, QualityPolicy: "metric", ColorPolicy: "preserve", TargetDSSIM: 0.002, TargetSSIM: 0.975, TargetSSIMULACRA2: 85, Attempts: 4, Formats: formats,
 			PhotoColors: 8192, AVIFEffort: 4,
 			Text: TextLevels{Brotli: 6, Gzip: 6, Zstd: 3, BrotliStatic: 10, StaticWaitMS: 300},
 		},
 		ProfileSaver: {
-			Name: ProfileSaver, TargetDSSIM: 0.006, TargetSSIM: 0.95, TargetSSIMULACRA2: 75, Attempts: 3, Formats: formats,
+			Name: ProfileSaver, QualityPolicy: "metric", ColorPolicy: "preserve", TargetDSSIM: 0.006, TargetSSIM: 0.95, TargetSSIMULACRA2: 75, Attempts: 3, Formats: formats,
 			ResizeToViewport: true, PhotoColors: 4096, AnimatedQuality: 80, AVIFEffort: 5,
 			NoTransform: NoTransformImages, MinifyJS: true,
 			Text: TextLevels{Brotli: 7, Gzip: 7, Zstd: 5, BrotliStatic: 11, StaticWaitMS: 1000},
 		},
 		ProfileExtreme: {
-			Name: ProfileExtreme, TargetDSSIM: 0.015, TargetSSIM: 0.90, TargetSSIMULACRA2: 60, Attempts: 3, Formats: formats,
+			Name: ProfileExtreme, QualityPolicy: "metric", ColorPolicy: "preserve", TargetDSSIM: 0.015, TargetSSIM: 0.90, TargetSSIMULACRA2: 60, Attempts: 3, Formats: formats,
 			ResizeToViewport: true, PhotoColors: 1024, QuantizePNG: true,
-			AnimatedToStill: true, AnimatedQuality: 65, AVIFEffort: 5,
+			AnimatedQuality: 65, AVIFEffort: 5,
 			NoTransform: NoTransformImages, MinifyJS: true,
 			Text: TextLevels{Brotli: 7, Gzip: 9, Zstd: 7, BrotliStatic: 11, StaticWaitMS: 1500},
 		},

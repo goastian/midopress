@@ -3,7 +3,10 @@
 /artifacts/
 *.crt
 *.key
-/docs/
+/docs/*
+!/docs/13-plan-progresivo.md
+!/docs/16-api-imagenes.md
+!/docs/17-validacion-imagenes.md
 *.test
 *.prof
 

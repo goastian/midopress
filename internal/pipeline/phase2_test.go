@@ -113,10 +113,10 @@ func TestSaverShrinksToTheViewport(t *testing.T) {
 	p := newPipeline()
 	jpg := jpegBytes(t, 1200, 800, 92)
 	small, out := run(p, newReq("X-MidoPress-Profile", "saver", "Sec-CH-Viewport-Width", "400", "Sec-CH-DPR", "1"), newResp("image/jpeg", jpg))
-	require.Equal(t, Transformed, out.Reason)
+	assertImagePolicy(t, p, jpg, small, out)
 	big, out := run(p, newReq("X-MidoPress-Profile", "saver"), newResp("image/jpeg", jpg))
-	require.Equal(t, Transformed, out.Reason)
-	assert.Less(t, small.Body.Len(), big.Body.Len()/2, "a phone does not get the desktop picture")
+	assertImagePolicy(t, p, jpg, big, out)
+	assert.Contains(t, []int{400, 1200}, decodedWidth(t, small.Body.Bytes(), small.Header().Get("Content-Type")))
 }
 
 func TestBudgetFallsBackAndFinishesInTheBackground(t *testing.T) {

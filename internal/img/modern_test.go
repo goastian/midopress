@@ -1,13 +1,16 @@
 package img
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"image"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/goastian/midopress/internal/imgmeta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -90,12 +93,12 @@ func TestModernInputsAreRecodedAgainstWhatTheSiteSent(t *testing.T) {
 		assert.Less(t, len(res.Data), len(avif))
 	})
 
-	t.Run("a JPEG XL that carries an alpha plane is left alone, as the wasm encoder always writes one", func(t *testing.T) {
+	t.Run("portable JPEG XL inputs are supported, including headers with alpha", func(t *testing.T) {
 		if len(jxl) == 0 {
 			t.Skip("unsafe native JPEG XL pixel encoder is disabled")
 		}
 		_, err := optimizeModernInput(t, jxl, JXL, ProfileExtreme, Caps{WebP: true, AVIF: true, JXL: true})
-		assert.ErrorIs(t, err, ErrUnsupported)
+		assert.NoError(t, err)
 	})
 
 	t.Run("a JPEG XL made by libjxl whose header says plain sRGB is recoded", func(t *testing.T) {
@@ -125,21 +128,47 @@ func TestModernInputsAreRecodedAgainstWhatTheSiteSent(t *testing.T) {
 		assert.Equal(t, WebP, res.Format, "the client was sent a WebP, so it is a WebP")
 	})
 
-	t.Run("an animated WebP, one with a profile that is not sRGB or with an orientation, is left alone and says why", func(t *testing.T) {
-		tiff := []byte("MM\x00*\x00\x00\x00\x08\x00\x01\x01\x12\x00\x03\x00\x00\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00")
+	t.Run("an animated WebP, one with an invalid profile, or truncated input says why it is left alone", func(t *testing.T) {
 		for name, tc := range map[string]struct {
 			raw []byte
 			why string
 		}{
-			"animated":    {webpWith(webp, 0x02, riffChunk("ANIM", make([]byte, 6))), "animated"},
-			"bad profile": {webpWith(webp, 0x20, riffChunk("ICCP", []byte("not a colour profile at all, nothing sRGB here"))), "colour profile"},
-			"orientation": {webpWithEXIF(webpWith(webp, 0x08), tiff), "orientation"},
-			"truncated":   {webp[:20], "unreadable header"},
+			"animated":  {webpWith(webp, 0x02, riffChunk("ANIM", make([]byte, 6))), "animated"},
+			"truncated": {webp[:20], "unreadable header"},
 		} {
 			_, err := optimizeModernInput(t, tc.raw, WebP, ProfileExtreme, Caps{WebP: true, AVIF: true})
 			assert.ErrorIs(t, err, ErrUnsupported, name)
 			require.Error(t, err, name)
 			assert.Contains(t, err.Error(), tc.why, name)
+		}
+	})
+	t.Run("preserve retains an unreadable profile and srgb rejects it", func(t *testing.T) {
+		raw := webpWith(webp, 0x20, riffChunk("ICCP", []byte("not a colour profile at all, nothing sRGB here")))
+		p := profile(t, ProfileExtreme)
+		e := NewEngine(NewWASM())
+		in := Input{Raw: raw, Format: WebP, Profile: p, Caps: Caps{WebP: true}}
+		result, err := e.Optimize(context.Background(), in)
+		require.NoError(t, err)
+		assert.Equal(t, raw, result.Data)
+		p.ColorPolicy = "srgb"
+		_, err = e.Optimize(context.Background(), in)
+		assert.ErrorIs(t, err, ErrUnsupported)
+		assert.ErrorContains(t, err, "colour profile")
+	})
+
+	t.Run("WebP orientation is applied before recoding", func(t *testing.T) {
+		tiff := []byte("MM\x00*\x00\x00\x00\x08\x00\x01\x01\x12\x00\x03\x00\x00\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00")
+		raw := webpWithEXIF(webpWith(webp, 0x08), tiff)
+		res, err := optimizeModernInput(t, raw, WebP, ProfileExtreme, Caps{WebP: true, AVIF: true})
+		require.NoError(t, err)
+		decoded, err := testEngine.Backend().Decode(res.Format, res.Data)
+		require.NoError(t, err)
+		if bytes.Equal(res.Data, raw) {
+			meta, err := imgmeta.ParseWebP(res.Data)
+			require.NoError(t, err)
+			assert.Equal(t, 6, meta.Orientation, "original fallback keeps its orientation")
+		} else {
+			assert.Equal(t, image.Pt(150, 200), decoded.Bounds().Size())
 		}
 	})
 

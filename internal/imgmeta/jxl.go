@@ -4,15 +4,25 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+
+	"github.com/goastian/midopress/internal/jxlcodec"
 )
 
-// JXL is what the header of a JPEG XL file says about the picture. Only files
-// whose header can be read to the end and say, without room for doubt, that they
-// are a still picture in sRGB with no alpha are described: the rest is an error,
-// because the codestream has more ways to describe colour, orientation, previews
-// and animation than a recode would keep.
+// JXL describes the oriented canvas and original colour/animation metadata.
 type JXL struct {
-	Width, Height int
+	Width, Height               int
+	RawWidth, RawHeight         int
+	Orientation                 int
+	Alpha                       bool
+	ExtraChannels               int
+	Animated                    bool
+	Frames, LoopCount           int
+	BitsPerSample, ExponentBits int
+	IntensityTarget             float32
+	ICC                         []byte
+	OutputSRGB                  bool
+	Primaries, TransferFunction uint32
+	OriginalSRGB                bool
 }
 
 var errNotPlainJXL = errors.New("imgmeta: not a plain still JPEG XL picture in sRGB")
@@ -66,6 +76,26 @@ var jxlRatios = [8][2]int{{0, 0}, {1, 1}, {12, 10}, {4, 3}, {3, 2}, {16, 9}, {5,
 
 // ParseJXL reads the header of a JPEG XL file, bare or in its container.
 func ParseJXL(raw []byte) (*JXL, error) {
+	if plain, err := parsePlainJXL(raw); err == nil {
+		plain.RawWidth, plain.RawHeight = plain.Width, plain.Height
+		plain.Orientation, plain.Frames, plain.BitsPerSample = 1, 1, 8
+		plain.OutputSRGB = true
+		plain.OriginalSRGB = true
+		plain.Primaries, plain.TransferFunction = 1, 13
+		return plain, nil
+	}
+	m, err := jxlcodec.Inspect(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &JXL{Width: m.Width, Height: m.Height, RawWidth: m.RawWidth, RawHeight: m.RawHeight, Orientation: m.Orientation,
+		Alpha: m.AlphaBits > 0, ExtraChannels: m.ExtraChannels, Animated: m.Animated, Frames: m.Frames, LoopCount: m.LoopCount, BitsPerSample: m.BitsPerSample,
+		ExponentBits: m.ExponentBits, IntensityTarget: m.IntensityTarget, ICC: m.ICC, OutputSRGB: m.OutputSRGB,
+		Primaries: m.Primaries, TransferFunction: m.TransferFunction,
+		OriginalSRGB: m.WhitePoint == 1 && m.TransferFunction == 13 && (m.ColorSpace == 0 && m.Primaries == 1 || m.ColorSpace == 1)}, nil
+}
+
+func parsePlainJXL(raw []byte) (*JXL, error) {
 	code, err := jxlCodestream(raw)
 	if err != nil {
 		return nil, err
@@ -102,8 +132,10 @@ func ParseJXL(raw []byte) (*JXL, error) {
 		if r.flag() { // float samples
 			return nil, errNotPlainJXL
 		}
-		r.u32([4]jxlDist{val(8), val(10), val(12), bitsOff(6, 1)}) // bits per sample
-		r.flag()                                                   // modular 16 bit buffers
+		if r.u32([4]jxlDist{val(8), val(10), val(12), bitsOff(6, 1)}) != 8 {
+			return nil, errNotPlainJXL
+		}
+		r.flag() // modular 16 bit buffers
 		if r.u32([4]jxlDist{val(0), val(1), bitsOff(4, 2), bitsOff(12, 1)}) != 0 {
 			return nil, errNotPlainJXL // an alpha plane or another channel
 		}

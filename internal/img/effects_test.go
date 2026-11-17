@@ -75,7 +75,7 @@ func TestFullResolutionVerificationDetectsPixelDamage(t *testing.T) {
 	require.NoError(t, err)
 	fullScore, err := full.eval(b)
 	require.NoError(t, err)
-	assert.Greater(t, smallScore, .99)
+	assert.Less(t, smallScore, .5, "the default also checks every source pixel")
 	assert.Less(t, fullScore, .5)
 }
 

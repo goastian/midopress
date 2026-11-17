@@ -15,11 +15,8 @@ func isModern(f Format) bool { return f == WebP || f == AVIF || f == JXL }
 // ErrUnsupported: the reason is one of a short list, so that it can be counted.
 func whyNotModern(why string) error { return fmt.Errorf("%w: %s", ErrUnsupported, why) }
 
-// checkModern says whether a WebP, AVIF or JPEG XL file can be decoded and
-// recoded without changing what a browser shows. A browser reads things from
-// the container that the pixels do not carry: a colour profile, an orientation,
-// a crop, an animation. A recode would drop them, so a file that has any is left
-// alone. Colour is never guessed.
+// checkModern identifies the conservative plain-sRGB fast path. The managed
+// recoding path uses DecodeDisplay for color and presentation metadata.
 func checkModern(f Format, raw []byte) error {
 	switch f {
 	case WebP:
@@ -55,7 +52,7 @@ func checkModern(f Format, raw []byte) error {
 		return nil
 	case JXL:
 		if _, err := imgmeta.ParseJXL(raw); err != nil {
-			return whyNotModern("not plain sRGB without alpha")
+			return whyNotModern("unreadable JPEG XL")
 		}
 		return nil
 	}
@@ -72,14 +69,56 @@ func (e *Engine) optimizeModern(ctx context.Context, in Input) (*Result, error) 
 	if in.Profile.Lossless {
 		return nil, whyNotModern("lossless profile")
 	}
-	if err := checkModern(in.Format, in.Raw); err != nil {
-		return nil, err
-	}
-	src, err := e.be.Decode(in.Format, in.Raw)
-	if err != nil {
-		return nil, whyNotModern("not decodable")
+	animated := false
+	switch in.Format {
+	case WebP:
+		meta, err := imgmeta.ParseWebP(in.Raw)
+		animated = err == nil && meta.Animated
+	case AVIF:
+		meta, err := imgmeta.ParseAVIF(in.Raw)
+		animated = err == nil && meta.Animated
+	case JXL:
+		meta, err := imgmeta.ParseJXL(in.Raw)
+		if err == nil && jxlHasUnsupportedChannels(meta) {
+			return &Result{Data: in.Raw, Format: JXL, Lossless: true, Note: "original auxiliary channels preserved"}, nil
+		}
+		if err == nil && jxlHasUnclassifiedTransfer(meta) {
+			return &Result{Data: in.Raw, Format: JXL, Lossless: true, Note: "original unclassified color encoding preserved"}, nil
+		}
+		if err == nil && jxlNeedsToneMap(meta) {
+			return nil, whyNotModern("JPEG XL HDR requires explicit tone mapping")
+		}
+		animated = err == nil && meta.Animated
 	}
 	base := &Result{Data: in.Raw, Format: in.Format, Lossless: true, Note: "original"}
+	if animated {
+		decoder, ok := e.be.(AnimationDecoder)
+		if !ok {
+			return nil, whyNotModern("animated format has no decoder")
+		}
+		// AVIF sequences and metadata-bearing WebP animation need a managed
+		// animation decoder. JPEG XL's portable decoder already manages every frame.
+		if in.Format != JXL {
+			return nil, whyNotModern("animated format needs managed frames")
+		}
+		frames, err := decoder.DecodeAnimation(in.Format, in.Raw)
+		if err != nil {
+			return nil, whyNotModern("animated format is not decodable")
+		}
+		in.Caps.JXL = true
+		result, err := e.optimizeFrames(ctx, in, frames)
+		if err != nil || len(result.Data) >= len(base.Data) {
+			return base, nil
+		}
+		if NeedsColorConversion(in.Raw, in.Format) {
+			result.Lossless = false
+		}
+		return result, nil
+	}
+	src, err := DecodeDisplay(ctx, e.be, in.Format, in.Raw)
+	if err != nil {
+		return nil, err
+	}
 	// the client was sent this format, so it can show it whatever its Accept says
 	switch in.Format {
 	case WebP:

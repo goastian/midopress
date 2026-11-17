@@ -7,6 +7,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestQualityPoliciesAreExplicitAndValidated(t *testing.T) {
+	all, err := BuildProfiles(map[string]ProfileOverride{
+		"strict": {Base: ProfileBalanced, QualityPolicy: ptr("pixels")},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "pixels", all["strict"].QualityPolicy)
+	assert.Equal(t, "metric", all[ProfileBalanced].QualityPolicy)
+	assert.Equal(t, "pixels", all[ProfileLossless].QualityPolicy)
+	assert.Equal(t, "preserve", all[ProfileBalanced].ColorPolicy)
+	_, err = BuildProfiles(map[string]ProfileOverride{"bad": {QualityPolicy: ptr("universal")}})
+	assert.ErrorContains(t, err, "quality_policy")
+	_, err = BuildProfiles(map[string]ProfileOverride{"bad": {QualityPolicy: ptr("pixels"), Grayscale: ptr(true)}})
+	assert.Error(t, err)
+	_, err = BuildProfiles(map[string]ProfileOverride{"bad": {ColorPolicy: ptr("guess")}})
+	assert.ErrorContains(t, err, "color_policy")
+}
+
 func ptr[T any](v T) *T { return &v }
 
 func TestAppearanceEffectsRequireExplicitLossyProfiles(t *testing.T) {

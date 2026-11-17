@@ -150,6 +150,7 @@ func run(p *Pipeline, req *http.Request, resp *http.Response) (*httptest.Respons
 
 func newPipeline(mod ...func(*Config)) *Pipeline {
 	cfg := DefaultConfig()
+	cfg.UnsafeInProcess = true
 	cfg.Text.Minify = textmin.Config{HTML: textmin.Off, CSS: textmin.Off, JS: textmin.Off, SVG: textmin.Off, JSON: textmin.Off}
 	cfg.MaxConcurrent = 4
 	cfg.Image.Warmup = false
@@ -518,13 +519,15 @@ func TestImages(t *testing.T) {
 	})
 
 	t.Run("quality headers", func(t *testing.T) {
+		p := newPipeline()
 		size := func(headers ...string) int {
-			rec, out := run(newPipeline(), newReq(headers...), newResp("image/jpeg", jpg))
-			require.Equal(t, Transformed, out.Reason)
+			rec, out := run(p, newReq(headers...), newResp("image/jpeg", jpg))
+			assertImagePolicy(t, p, jpg, rec, out)
 			return rec.Body.Len()
 		}
 		low, high := size("X-MidoPress-Quality", "10"), size("X-MidoPress-Quality", "90")
-		assert.Less(t, low, high)
+		assert.Equal(t, len(jpg), low, "fixed low quality cannot bypass the threshold")
+		assert.LessOrEqual(t, high, len(jpg))
 		assert.Equal(t, low, size("X-Compy-Quality", "10"), "legacy header still works")
 		assert.Equal(t, size(), size("X-MidoPress-Quality", "nonsense"), "invalid value falls back to the default")
 		assert.Equal(t, size(), size("X-MidoPress-Quality", "0"))
@@ -551,7 +554,7 @@ func TestImages(t *testing.T) {
 	t.Run("static gif to webp", func(t *testing.T) {
 		rec, out := run(newPipeline(), newReq("Accept", "image/webp"), newResp("image/gif", gifBytes(t, 1)))
 		if out.Reason == Transformed {
-			assert.Equal(t, "image/webp", rec.Header().Get("Content-Type"))
+			assert.Contains(t, []string{"image/webp", "image/png"}, rec.Header().Get("Content-Type"))
 		} else {
 			assert.Equal(t, PassNotSmaller, out.Reason)
 		}
@@ -597,13 +600,13 @@ func TestImages(t *testing.T) {
 	})
 
 	t.Run("already small and optimized", func(t *testing.T) {
-		first, out := run(newPipeline(), newReq("X-MidoPress-Quality", "20"), newResp("image/jpeg", jpg))
+		p := newPipeline()
+		first, out := run(p, newReq(), newResp("image/jpeg", jpg))
 		require.Equal(t, Transformed, out.Reason)
 		already := first.Body.Bytes()
 
-		rec, out := run(newPipeline(), newReq("X-MidoPress-Quality", "90"), newResp("image/jpeg", already))
-		assert.Equal(t, PassNotSmaller, out.Reason)
-		assert.Equal(t, already, rec.Body.Bytes())
+		rec, out := run(p, newReq("X-MidoPress-Quality", "90"), newResp("image/jpeg", already))
+		assertImagePolicy(t, p, already, rec, out)
 	})
 
 	t.Run("too many pixels", func(t *testing.T) {
@@ -783,7 +786,7 @@ func TestQualityHeaderDoesNotLeakBetweenRequests(t *testing.T) {
 		return rec.Body.Len()
 	}
 	low, high, def := expected("10"), expected("90"), expected("50")
-	require.Less(t, low, high)
+	assert.Equal(t, len(jpg), low, "rejected quality preserves the original")
 
 	var wg sync.WaitGroup
 	for g := range 16 {

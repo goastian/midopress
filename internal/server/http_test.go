@@ -127,16 +127,16 @@ func TestTextCompressionThroughProxy(t *testing.T) {
 		assert.Equal(t, f.noise, body)
 	})
 
-	t.Run("text of unknown length is compressed as it streams", func(t *testing.T) {
+	t.Run("text of unknown length streams without entering an unbounded codec", func(t *testing.T) {
 		resp, body := h.get(c, h.plainURL("/html-chunked"), "Accept-Encoding", "gzip, br")
-		assert.Equal(t, "br", resp.Header.Get("Content-Encoding"))
-		assert.Equal(t, f.html, decoded(t, resp, body))
+		assert.Empty(t, resp.Header.Get("Content-Encoding"))
+		assert.Equal(t, f.html, decodeBody(t, resp, body))
 	})
 
 	t.Run("incompressible text of unknown length grows only marginally", func(t *testing.T) {
 		resp, body := h.get(c, h.plainURL("/noise-chunked"), "Accept-Encoding", "gzip")
 		assert.LessOrEqual(t, len(body), len(f.noise)*101/100)
-		assert.Equal(t, f.noise, decoded(t, resp, body))
+		assert.Equal(t, f.noise, decodeBody(t, resp, body))
 	})
 
 	t.Run("a gzip stream of unknown length is relayed as is", func(t *testing.T) {
@@ -194,8 +194,9 @@ func TestImagesThroughProxy(t *testing.T) {
 		_, low := h.get(c, h.plainURL("/image/jpeg"), "X-MidoPress-Quality", "10")
 		_, high := h.get(c, h.plainURL("/image/jpeg"), "X-MidoPress-Quality", "90")
 		_, legacy := h.get(c, h.plainURL("/image/jpeg"), "X-Compy-Quality", "10")
-		assert.Less(t, len(low), len(high))
-		assert.Equal(t, len(low), len(legacy))
+		assert.Equal(t, f.jpeg, low, "low fixed quality cannot bypass full-resolution verification")
+		assert.LessOrEqual(t, len(high), len(f.jpeg))
+		assert.Equal(t, low, legacy)
 	})
 
 	t.Run("webp when the browser accepts it", func(t *testing.T) {
@@ -301,7 +302,7 @@ func TestStreamingResponses(t *testing.T) {
 		}
 	})
 
-	t.Run("a long compressed stream is flushed progressively", func(t *testing.T) {
+	t.Run("a long stream is flushed progressively without waiting for EOF", func(t *testing.T) {
 		h := newHarness(t)
 		c := h.client()
 		req, _ := http.NewRequest(http.MethodGet, h.plainURL("/stream"), nil)
@@ -309,9 +310,11 @@ func TestStreamingResponses(t *testing.T) {
 		resp, err := c.Do(req)
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
-		assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
-
-		zr := newGzipReader(t, resp.Body)
+		assert.Empty(t, resp.Header.Get("Content-Encoding"))
+		var zr io.Reader = resp.Body
+		if resp.Header.Get("Content-Encoding") == "gzip" {
+			zr = newGzipReader(t, resp.Body)
+		}
 		first := make([]byte, 100)
 		_, err = io.ReadFull(zr, first)
 		require.NoError(t, err, "the first chunk must be readable before the origin finishes")

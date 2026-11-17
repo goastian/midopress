@@ -5,6 +5,7 @@ import (
 
 	"github.com/goastian/midopress/internal/flows"
 	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/pipeline"
 	"github.com/goastian/midopress/internal/stats"
 )
 
@@ -124,6 +125,8 @@ type profileInfo struct {
 	Lossless          bool                `json:"lossless"`
 	Grayscale         bool                `json:"grayscale"`
 	PlaceholderWidth  int                 `json:"placeholder_width"`
+	QualityPolicy     string              `json:"quality_policy"`
+	ColorPolicy       string              `json:"color_policy"`
 	TargetDSSIM       float64             `json:"target_dssim"`
 	TargetSSIM        float64             `json:"target_ssim"`
 	TargetSSIMULACRA2 float64             `json:"target_ssimulacra2"`
@@ -216,21 +219,23 @@ type module struct {
 }
 
 type about struct {
-	Version           string                      `json:"version"`
-	GoVersion         string                      `json:"go_version"`
-	OS                string                      `json:"os"`
-	Arch              string                      `json:"arch"`
-	Started           time.Time                   `json:"started"`
-	UptimeSeconds     float64                     `json:"uptime_seconds"`
-	Backend           string                      `json:"backend"`
-	Backends          []string                    `json:"backends"`
-	Native            map[string]bool             `json:"native"`
-	Codecs            map[string]img.CodecRuntime `json:"codecs"`
-	JPEGRecompression bool                        `json:"jpeg_recompression"`
-	Modules           []module                    `json:"modules"`
-	StateDir          string                      `json:"state_dir"`
-	ProxyAddr         string                      `json:"proxy_addr"`
-	TLS               bool                        `json:"tls"`
-	MITM              bool                        `json:"mitm"`
-	AuthMode          string                      `json:"auth_mode"`
+	Version               string                      `json:"version"`
+	GoVersion             string                      `json:"go_version"`
+	OS                    string                      `json:"os"`
+	Arch                  string                      `json:"arch"`
+	Started               time.Time                   `json:"started"`
+	UptimeSeconds         float64                     `json:"uptime_seconds"`
+	Backend               string                      `json:"backend"`
+	Backends              []string                    `json:"backends"`
+	Native                map[string]bool             `json:"native"`
+	Codecs                map[string]img.CodecRuntime `json:"codecs"`
+	JPEGRecompression     bool                        `json:"jpeg_recompression"`
+	JPEGRecompressionPath string                      `json:"jpeg_recompression_path"`
+	Sandbox               pipeline.SandboxInfo        `json:"sandbox"`
+	Modules               []module                    `json:"modules"`
+	StateDir              string                      `json:"state_dir"`
+	ProxyAddr             string                      `json:"proxy_addr"`
+	TLS                   bool                        `json:"tls"`
+	MITM                  bool                        `json:"mitm"`
+	AuthMode              string                      `json:"auth_mode"`
 }

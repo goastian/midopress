@@ -96,7 +96,7 @@ export const NewDevice = obj({ id: str, profile: str, token: str, config_url: st
 
 const Text = obj({ brotli: num, gzip: num, zstd: num, brotli_static: num, static_wait_ms: num })
 export const ProfileInfo = obj({
-  name: str, builtin: bool, modified: bool, lossless: bool, target_dssim: num, target_ssim: num, target_ssimulacra2: num,
+  name: str, builtin: bool, modified: bool, lossless: bool, quality_policy: lit('metric', 'pixels'), color_policy: lit('preserve', 'srgb'), target_dssim: num, target_ssim: num, target_ssimulacra2: num,
   attempts: num, formats: Strs, resize_to_viewport: bool, photo_colors: num, quantize_png: bool, animated_to_still: bool,
   animated_quality: num, avif_effort: num, no_transform: str, minify_js: bool, text: Text, override: rec('any'),
 })

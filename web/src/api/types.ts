@@ -35,6 +35,20 @@ export interface SignedImage {
   expires: string
 }
 
+export interface ImageCredentialScope {
+  hosts: string[]
+  profiles: string[]
+  max_width: number
+  max_dpr: number
+  ttl_seconds: number
+}
+
+export interface ImageCredential {
+  token: string
+  public_url: string
+  scope: ImageCredentialScope & { id: string; expires: number }
+}
+
 /** What a group of responses amounted to. */
 export interface Bucket {
   requests: number
@@ -328,6 +342,8 @@ export interface Rule {
 
 /** A profile as the configuration describes it, all fields optional. */
 export interface ProfileOverride {
+  quality_policy?: 'metric' | 'pixels'
+  color_policy?: 'preserve' | 'srgb'
   base?: string
   grayscale?: boolean
   placeholder_width?: number
@@ -352,6 +368,8 @@ export interface ProfileOverride {
 
 /** A profile as it works, with every value filled in. */
 export interface ProfileInfo {
+  quality_policy: 'metric' | 'pixels'
+  color_policy: 'preserve' | 'srgb'
   name: string
   builtin: boolean
   /** true when the configuration changes a built-in profile */
@@ -495,6 +513,10 @@ export interface About {
   native: Record<string, boolean>
   codecs?: Record<string, { encoder: string; decoder: string; reason: string }>
   jpeg_recompression?: boolean
+  jpeg_recompression_path?: string
+  sandbox?: { enforced: boolean; policy: string; threads: string; filesystem: string; network: string;
+    process_creation: string; memory_headroom_bytes: number; cpu_seconds: number; verified_at?: string;
+    error?: string; active: number; queued: number; slots: number }
   modules: Module[]
   state_dir: string
   proxy_addr: string

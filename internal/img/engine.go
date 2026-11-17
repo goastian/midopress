@@ -20,10 +20,10 @@ type Input struct {
 	Caps    Caps
 	Profile *Profile
 	Hints   Hints
-	// Fixed forces the quality of the encoder, 1 to 100, and skips the search.
-	// Zero lets the engine find the lowest quality that meets the profile.
+	// Fixed selects one encoder quality, 1 to 100, which must still meet the profile.
+	// Zero lets the engine search for a quality that meets the profile.
 	Fixed int
-	// VerifyQuality checks fixed qualities and all animation frames, with no metric downsampling.
+	// VerifyQuality is retained for callers; verification is always enabled.
 	VerifyQuality bool
 	OutputFormat  Format
 	// Metric overrides the engine's metric for this image when not empty.
@@ -52,10 +52,11 @@ type Result struct {
 	Resized  bool
 	// Limited says that a better format was skipped because the time budget
 	// was too short for it. A caller with more time can try again.
-	Limited     bool
-	Quality     int    // quality of the winning encode, 0 when not applicable
-	Note        string // short description, for logs and benchmarks
-	Intentional bool
+	Limited        bool
+	Quality        int    // quality of the winning encode, 0 when not applicable
+	Note           string // short description, for logs and benchmarks
+	Intentional    bool
+	ColorConverted bool // explicit sRGB gamut/TRC mapping, not fidelity to the wide-gamut source
 }
 
 // Engine recodes images with a Backend.
@@ -105,10 +106,33 @@ func (e *Engine) Backend() Backend { return e.be }
 // and that meets the profile. It returns ErrUnsupported for images it will not
 // touch, such as animated PNG or images with an unusual colour profile that no
 // lossless step can improve, and ErrBudget when nothing fits in the time given.
-func (e *Engine) Optimize(ctx context.Context, in Input) (*Result, error) {
+func (e *Engine) Optimize(ctx context.Context, in Input) (result *Result, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if in.Profile == nil {
 		in.Profile, _ = Lookup(ProfileBalanced)
 	}
+	in.VerifyQuality = true
+	if in.Profile.QualityPolicy == "pixels" {
+		if in.Profile.Grayscale || in.Profile.PlaceholderWidth > 0 {
+			return nil, ErrUnsupported
+		}
+		p := *in.Profile
+		p.Lossless, p.ResizeToViewport, p.QuantizePNG, p.AnimatedToStill = true, false, false, false
+		in.Profile = &p
+	}
+	colorChange := NeedsColorConversion(in.Raw, in.Format)
+	if colorChange && (in.Profile.ColorPolicy != "srgb" || in.Profile.Lossless) {
+		return &Result{Data: in.Raw, Format: in.Format, Lossless: true, Note: "original color preserved"}, nil
+	}
+	defer func() {
+		if err == nil && result != nil && colorChange && !result.Lossless {
+			result.ColorConverted, result.Intentional = true, true
+			result.Metric, result.Measure = "", 0
+			result.Note += ", explicit relative-colorimetric sRGB conversion"
+		}
+	}()
 	if in.Profile.Grayscale || in.Profile.PlaceholderWidth > 0 {
 		return e.optimizeEffects(ctx, in)
 	}
@@ -164,14 +188,15 @@ func (e *Engine) attemptCost(f Format, pixels int) time.Duration {
 
 func (e *Engine) optimizeJPEG(ctx context.Context, in Input) (*Result, error) {
 	meta, err := imgmeta.ParseJPEG(in.Raw)
-	if err != nil || meta.Components == 4 {
+	if err != nil {
 		return nil, ErrUnsupported
 	}
-	icc := imgmeta.ClassifyICC(meta.ICC)
-	// An sRGB profile is what every decoder assumes anyway. Any other profile
-	// changes the colours, so it is kept and the pixels are not re-encoded.
-	keepICC := meta.ICC != nil && icc != imgmeta.ICCsRGB
-	opts := imgmeta.StripOptions{KeepICC: keepICC, KeepOrientation: true, KeepJFIF: true}
+	if meta.HasICC && len(meta.ICC) == 0 {
+		return nil, whyNotModern("incomplete JPEG colour profile")
+	}
+	// A fallback keeps every profile, including approximate sRGB profiles.
+	// Only an actual managed recode may replace its color interpretation.
+	opts := imgmeta.StripOptions{KeepICC: len(meta.ICC) > 0, KeepOrientation: true, KeepJFIF: true}
 	stripped, err := imgmeta.StripJPEG(in.Raw, opts)
 	if err != nil {
 		return nil, ErrUnsupported
@@ -185,7 +210,7 @@ func (e *Engine) optimizeJPEG(ctx context.Context, in Input) (*Result, error) {
 			base = &Result{Data: jxl, Format: JXL, Lossless: true, Note: "jpeg to jxl, reversible"}
 		}
 	}
-	if in.Profile.Lossless || keepICC {
+	if in.Profile.Lossless {
 		return base, nil
 	}
 
@@ -193,6 +218,13 @@ func (e *Engine) optimizeJPEG(ctx context.Context, in Input) (*Result, error) {
 		return nil, err
 	}
 	src, err := stdjpeg.Decode(bytes.NewReader(in.Raw))
+	if err != nil {
+		return base, nil
+	}
+	if meta.Components == 4 && len(meta.ICC) == 0 {
+		return base, nil
+	}
+	src, err = managedPixels(ctx, src, meta.ICC)
 	if err != nil {
 		return base, nil
 	}
@@ -243,25 +275,37 @@ func (e *Engine) formatsFor(in Input, alpha bool) []Format {
 // lossy runs the search on a decoded picture and returns the best result,
 // which is base when nothing beats it.
 func (e *Engine) lossy(ctx context.Context, in Input, src image.Image, orientation int, base *Result) (*Result, error) {
+	started := time.Now()
 	p := in.Profile
-	pic, alpha := Normalize(Orient(src, orientation))
+	reference := Orient(src, orientation)
+	pic, alpha := Normalize(reference)
 	resized := false
-	if p.ResizeToViewport {
-		if w, h, ok := scaledSize(pic.Bounds().Dx(), pic.Bounds().Dy(), in.Hints); ok {
-			pic, resized = Resize(pic, w, h), true
-		}
-	}
 	metric := in.Metric
 	if metric == "" {
 		metric = e.Metric
 	}
-	sc, err := newScorer(metric, pic, p, in.VerifyQuality)
+	sc, err := newScorer(metric, reference, p, true)
 	if err != nil {
 		return base, nil
+	}
+	if p.ResizeToViewport {
+		if w, h, ok := scaledSize(pic.Bounds().Dx(), pic.Bounds().Dy(), in.Hints); ok {
+			start := time.Now()
+			reduced := Resize(pic, w, h)
+			score, err := sc.eval(Resize(reduced, sc.width, sc.height))
+			if err == nil && score >= sc.target {
+				pic, resized = reduced, true
+			} else {
+				e.tracef("resize %dx%d rejected before encoding: %s %.5f (target %.5f), %s", w, h, sc.metric, sc.natural(score), sc.natural(sc.target), time.Since(start).Round(time.Millisecond))
+			}
+		}
 	}
 
 	pixels := pic.Bounds().Dx() * pic.Bounds().Dy()
 	remaining := in.Budget
+	if in.Budget > 0 {
+		remaining -= time.Since(started)
+	}
 	best := base
 	limited := false
 	for _, f := range e.formatsFor(in, alpha) {
@@ -289,11 +333,15 @@ func (e *Engine) lossy(ctx context.Context, in Input, src image.Image, orientati
 		if isModern(in.Format) {
 			unr = &e.unreachableModern
 		}
-		if unr.skip(f, p, sc.metric) && !in.TryAll {
+		if !resized && unr.skip(f, p, sc.metric) && !in.TryAll {
 			continue
 		}
 		res, spent, ceiling := e.search(ctx, f, pic, sc, in, attempts)
-		unr.record(f, p, sc.metric, res != nil, ceiling)
+		if !resized {
+			// Loss caused by geometry says nothing about a codec's ability to
+			// meet this threshold at the source resolution.
+			unr.record(f, p, sc.metric, res != nil, ceiling)
+		}
 		remaining -= spent
 		if res != nil {
 			res.Resized = resized
@@ -306,6 +354,28 @@ func (e *Engine) lossy(ctx context.Context, in Input, src image.Image, orientati
 		if !in.TryAll && best != nil && best != base && len(best.Data)*100 <= len(in.Raw)*55 {
 			break
 		}
+	}
+	if resized && best == base && ctx.Err() == nil {
+		retryBudget := remaining
+		if in.Budget > 0 {
+			retryBudget = min(remaining, in.Budget-time.Since(started))
+		}
+		if in.Budget <= 0 || retryBudget > 0 {
+			full := in
+			profile := *p
+			profile.ResizeToViewport = false
+			full.Profile = &profile
+			full.Budget = retryBudget
+			// The cloned profile cannot resize, so this is at most one retry.
+			res, err := e.lossy(ctx, full, src, orientation, base)
+			if res != nil && limited && !res.Limited {
+				copy := *res
+				copy.Limited = true
+				res = &copy
+			}
+			return res, err
+		}
+		limited = true
 	}
 	if best == nil {
 		return nil, ErrBudget
@@ -360,6 +430,12 @@ func (e *Engine) search(ctx context.Context, f Format, pic image.Image, sc *scor
 		if err != nil {
 			break
 		}
+		if dec.Bounds().Size() != pic.Bounds().Size() {
+			break // only the requested resize may change the coded canvas
+		}
+		if dec.Bounds().Size() != referenceSize(sc) {
+			dec = Resize(dec, sc.width, sc.height)
+		}
 		s, err := sc.eval(dec)
 		if err != nil {
 			break
@@ -368,7 +444,7 @@ func (e *Engine) search(ctx context.Context, f Format, pic image.Image, sc *scor
 		if e.OnEncode != nil {
 			e.OnEncode(f, pixels, time.Since(t0))
 		}
-		ok := s >= target || in.Fixed > 0 && !in.VerifyQuality
+		ok := s >= target
 		e.tracef("%s q=%d: %d bytes, %s %.5f (target %.5f), %s", f, q, len(data), sc.metric, sc.natural(s), sc.natural(target), time.Since(start).Round(time.Millisecond))
 		if ok && (best == nil || len(data) < len(best.Data)) {
 			best = &Result{Data: data, Format: f, Measure: sc.natural(s), Metric: sc.metric, Quality: q, Note: f.String()}
@@ -482,7 +558,11 @@ func (e *Engine) optimizePNG(ctx context.Context, in Input) (*Result, error) {
 		return nil, ErrUnsupported
 	}
 	base := &Result{Data: opt, Format: PNG, Lossless: true, Note: "png optimized"}
-	if info.NeedsColorManagement() {
+	if info.Orientation != 1 {
+		// pngopt strips eXIf. A fallback must retain its display orientation.
+		base.Data, base.Note = in.Raw, "original png with orientation"
+	}
+	if in.Profile.Lossless && (info.HasEXIF || info.HasGamma || info.HasChroma || info.HasCICP || len(info.ICC) > 0) {
 		return base, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -492,7 +572,21 @@ func (e *Engine) optimizePNG(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return base, nil
 	}
-	return e.optimizeStill(ctx, in, src, base, info.BitDepth > 8)
+	profile, err := pngProfile(ctx, info)
+	if err != nil {
+		return base, nil
+	}
+	src, err = managedPixels(ctx, src, profile)
+	if err != nil {
+		return base, nil
+	}
+	src = Orient(src, info.Orientation)
+	res, err := e.optimizeStill(ctx, in, src, base, info.BitDepth > 8)
+	if res != nil && res != base && len(profile) > 0 {
+		res.Lossless = false // relative colorimetric gamut conversion is intentional loss
+		res.Note += ", color managed to sRGB"
+	}
+	return res, err
 }
 
 // optimizeStill chooses between lossless and lossy recoding of a decoded
@@ -505,6 +599,11 @@ func (e *Engine) optimizeStill(ctx context.Context, in Input, src image.Image, b
 	// Pictures with few colours are graphics: they stay lossless in every
 	// profile that is not asked to reduce them. Many colours is a photograph.
 	_, photo := pngopt.UniqueColors(src, p.PhotoColors)
+	if p.ColorPolicy == "srgb" && NeedsColorConversion(in.Raw, in.Format) && !p.Lossless {
+		// CMS produces 16-bit sRGB. An 8-bit encoder is eligible only after
+		// metric verification; it cannot claim an exact 16-bit round trip.
+		photo = true
+	}
 	if p.Lossless {
 		photo = false
 	}
@@ -552,6 +651,10 @@ func (e *Engine) losslessModern(ctx context.Context, in Input, src image.Image) 
 		if err != nil {
 			continue
 		}
+		decoded, err := e.be.Decode(f, data)
+		if err != nil || !samePixels(src, decoded) {
+			continue
+		}
 		return &Result{Data: data, Format: f, Lossless: true, Attempts: 1, Note: f.String() + " lossless"}
 	}
 	return nil
@@ -591,6 +694,10 @@ func (e *Engine) quantized(ctx context.Context, in Input, src image.Image) *Resu
 	}
 	data, err := pngopt.Encode(pal, pngopt.Default)
 	if err != nil {
+		return nil
+	}
+	decoded, err := png.Decode(bytes.NewReader(data))
+	if err != nil || !samePixels(pal, decoded) {
 		return nil
 	}
 	return &Result{Data: data, Format: PNG, Measure: sc.natural(s), Metric: sc.metric, Attempts: 1, Note: "png 256 colours"}

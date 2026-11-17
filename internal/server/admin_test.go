@@ -376,13 +376,16 @@ func TestConfigChangesApplyAtOnceAndAreSaved(t *testing.T) {
 
 	hints := []string{"Sec-CH-Viewport-Width", "100", "Sec-CH-DPR", "1"}
 	_, balanced := h.get(c, h.plainURL("/image/jpeg"), hints...)
+	assertServedImagePolicy(t, fix().jpeg, balanced, "balanced")
 
 	t.Run("the default profile changes without a restart", func(t *testing.T) {
 		a.into("PUT", "/api/v1/config/default-profile", obj{"profile": "extreme"}, 200, &view)
 		assert.Equal(t, "extreme", view.DefaultProfile)
 		assert.True(t, view.ManagedByUI.DefaultProfile)
+		before := h.srv.Stats().Snapshot(0).ByProfile["extreme"].Requests
 		_, extreme := h.get(c, h.plainURL("/image/jpeg"), hints...)
-		assert.Less(t, len(extreme), len(balanced)/2, "the next response already uses the new profile")
+		assertServedImagePolicy(t, fix().jpeg, extreme, "extreme")
+		require.Eventually(t, func() bool { return h.srv.Stats().Snapshot(0).ByProfile["extreme"].Requests > before }, time.Second, 10*time.Millisecond, "the next response reaches the pipeline with the new profile")
 		assert.FileExists(t, view.StateFile)
 		a.obj("PUT", "/api/v1/config/default-profile", obj{"profile": "ghost"}, 422)
 	})

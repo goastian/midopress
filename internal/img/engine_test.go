@@ -224,16 +224,16 @@ func TestAnUnusualColourProfileIsNeverRecoded(t *testing.T) {
 	assert.Contains(t, string(res.Data), "ICC_PROFILE", "the profile must survive")
 }
 
-func TestResizeToTheViewport(t *testing.T) {
+func TestResizeStillMeetsTheFullSourceThreshold(t *testing.T) {
 	raw := encodeJPEG(t, photoLike(1200, 800, 7), 92)
 	hints := Hints{ViewportWidth: 400, DPR: 1.5}
 
 	res := optimize(t, Input{Raw: raw, Format: JPEG, Caps: Caps{WebP: true}, Profile: profile(t, ProfileSaver), Hints: hints})
-	assert.True(t, res.Resized)
+	assert.False(t, res.Resized, "viewport hints cannot authorize removing detail below the fidelity target")
 	dec, err := testEngine.Backend().Decode(res.Format, res.Data)
 	require.NoError(t, err)
-	assert.Equal(t, 600, dec.Bounds().Dx())
-	assert.Equal(t, 400, dec.Bounds().Dy())
+	assert.Equal(t, 1200, dec.Bounds().Dx())
+	assert.Equal(t, 800, dec.Bounds().Dy())
 
 	// balanced never changes the dimensions, whatever the hints say
 	res = optimize(t, Input{Raw: raw, Format: JPEG, Caps: Caps{WebP: true}, Profile: profile(t, ProfileBalanced), Hints: hints})
@@ -248,9 +248,13 @@ func TestFixedQuality(t *testing.T) {
 	p := profile(t, ProfileBalanced)
 	low := optimize(t, Input{Raw: raw, Format: JPEG, Profile: p, Fixed: 20})
 	high := optimize(t, Input{Raw: raw, Format: JPEG, Profile: p, Fixed: 90})
-	assert.Less(t, len(low.Data), len(high.Data))
-	assert.Equal(t, 1, low.Attempts, "a fixed quality is encoded once")
-	assert.Equal(t, 20, low.Quality)
+	assert.True(t, low.Lossless, "a fixed quality below target must fall back to the source")
+	assert.Zero(t, low.Quality)
+	assert.LessOrEqual(t, len(high.Data), len(low.Data))
+	if !high.Lossless {
+		assert.Equal(t, 1, high.Attempts, "a passing fixed quality is encoded once")
+		assert.Equal(t, 90, high.Quality)
+	}
 }
 
 func TestTheBudgetSteersToAFasterFormat(t *testing.T) {
@@ -478,14 +482,14 @@ func noisyGIF(t testing.TB, frames, w, h int) []byte {
 	return b.Bytes()
 }
 
-func TestLossyAnimationInSaver(t *testing.T) {
+func TestLossyAnimationCannotSkipSaverThreshold(t *testing.T) {
 	raw := noisyGIF(t, 4, 120, 90)
 	lossless := optimize(t, Input{Raw: raw, Format: GIF, Caps: Caps{WebP: true}, Profile: profile(t, ProfileBalanced)})
 	lossy := optimize(t, Input{Raw: raw, Format: GIF, Caps: Caps{WebP: true}, Profile: profile(t, ProfileSaver)})
 	assert.True(t, lossless.Lossless)
-	assert.False(t, lossy.Lossless, "a photographic animation is worth coding with loss in saver")
+	assert.True(t, lossy.Lossless, "configured animation quality still has to pass every frame's threshold")
 	assert.Equal(t, 4, riffFrames(lossy.Data))
-	assert.Less(t, len(lossy.Data), len(lossless.Data))
+	assert.Equal(t, len(lossy.Data), len(lossless.Data))
 }
 
 func TestFlatAnimationStaysLosslessEvenInSaver(t *testing.T) {
@@ -495,11 +499,12 @@ func TestFlatAnimationStaysLosslessEvenInSaver(t *testing.T) {
 	assert.Equal(t, 6, riffFrames(res.Data))
 }
 
-func TestAnimationBecomesStillOnlyInExtreme(t *testing.T) {
+func TestAnimationRemainsCompleteInExtreme(t *testing.T) {
 	raw := animatedGIF(t, 6, 96, 96)
-	res := optimize(t, Input{Raw: raw, Format: GIF, Caps: Caps{WebP: true}, Profile: profile(t, ProfileExtreme)})
-	assert.NotEqual(t, 6, riffFrames(res.Data))
-	assert.False(t, res.Lossless, "dropping frames is a loss and is reported as one")
+	p := profile(t, ProfileExtreme)
+	p.AnimatedToStill = true // a legacy setting cannot disable frame verification
+	res := optimize(t, Input{Raw: raw, Format: GIF, Caps: Caps{WebP: true}, Profile: p})
+	assert.Equal(t, 6, riffFrames(res.Data), "every frame survives even when AnimatedToStill was configured")
 	assert.Less(t, len(res.Data), len(raw))
 }
 

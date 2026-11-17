@@ -177,7 +177,14 @@ async function copyConfig() {
         <template v-for="(codec, name) in about.codecs" :key="name">
           <dt>{{ name }} execution</dt><dd>{{ codec.encoder }} encode / {{ codec.decoder }} decode<span class="hint"> — {{ codec.reason }}</span></dd>
         </template>
-        <dt>Reversible JPEG → JXL</dt><dd>{{ about.jpeg_recompression ? 'Available through native libjxl' : 'Unavailable in this runtime; original JPEG is preserved' }}</dd>
+        <dt>Reversible JPEG → JXL</dt><dd>{{ about.jpeg_recompression ? 'Available: ' + (about.jpeg_recompression_path ?? 'runtime path not reported') : 'Unavailable in this runtime; original JPEG is preserved' }}</dd>
+        <template v-if="about.sandbox">
+          <dt>Codec permission isolation</dt><dd :class="about.sandbox.enforced ? 'ok' : 'bad'">{{ about.sandbox.enforced ? 'Enforced and verified' : about.sandbox.policy === 'disabled-explicit' ? 'Explicitly disabled: codecs run in the server process' : 'Unavailable: transformations fail closed' }}</dd>
+          <dt>Sandbox policy</dt><dd>{{ about.sandbox.policy }} · {{ about.sandbox.threads }}</dd>
+          <dt>Worker permissions</dt><dd>Filesystem {{ about.sandbox.filesystem }} · network {{ about.sandbox.network }} · processes {{ about.sandbox.process_creation }}</dd>
+          <dt>Worker limits</dt><dd>{{ bytes(about.sandbox.memory_headroom_bytes) }} memory headroom · {{ about.sandbox.cpu_seconds }} CPU seconds · {{ about.sandbox.active }}/{{ about.sandbox.slots }} active, {{ about.sandbox.queued }} queued</dd>
+          <dt>Isolation checked</dt><dd>{{ about.sandbox.verified_at ? dateTime(about.sandbox.verified_at) : about.sandbox.error }}</dd>
+        </template>
       </dl>
       <div v-else class="skeleton" role="status" aria-label="Loading"><i /><i /><i /></div>
     </section>

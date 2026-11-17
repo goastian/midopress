@@ -91,7 +91,9 @@ func (s *Server) view() (configView, error) {
 		infos = append(infos, profileInfo{
 			Name: name, Builtin: isBuiltin, Modified: isBuiltin && modified, Lossless: p.Lossless,
 			Grayscale: p.Grayscale, PlaceholderWidth: p.PlaceholderWidth,
-			TargetDSSIM: p.TargetDSSIM, TargetSSIM: p.TargetSSIM, TargetSSIMULACRA2: p.TargetSSIMULACRA2,
+			QualityPolicy: orDefault(p.QualityPolicy, "metric"),
+			ColorPolicy:   orDefault(p.ColorPolicy, "preserve"),
+			TargetDSSIM:   p.TargetDSSIM, TargetSSIM: p.TargetSSIM, TargetSSIMULACRA2: p.TargetSSIMULACRA2,
 			Attempts: p.Attempts, Formats: formats, ResizeToViewport: p.ResizeToViewport, PhotoColors: p.PhotoColors,
 			QuantizePNG: p.QuantizePNG, AnimatedToStill: p.AnimatedToStill, AnimatedQuality: p.AnimatedQuality,
 			AVIFEffort: p.AVIFEffort, NoTransform: orDefault(p.NoTransform, img.NoTransformRespect), MinifyJS: p.MinifyJS,

@@ -145,13 +145,13 @@ func TestPNGNeedsColorManagement(t *testing.T) {
 		{"gamma 2.0", [][]byte{pngChunkBytes("gAMA", be32(50000))}, true},
 		{"gamma 1.8", [][]byte{pngChunkBytes("gAMA", be32(55556))}, true},
 		{"sRGB chunk overrides gamma", [][]byte{pngChunkBytes("sRGB", []byte{0}), pngChunkBytes("gAMA", be32(100000))}, false},
-		{"zero gamma ignored", [][]byte{pngChunkBytes("gAMA", be32(0))}, false},
+		{"zero gamma is ambiguous", [][]byte{pngChunkBytes("gAMA", be32(0))}, true},
 		{"srgb profile", [][]byte{iccpChunk(srgbProfile())}, false},
 		{"srgb profile beats gamma", [][]byte{iccpChunk(srgbProfile()), pngChunkBytes("gAMA", be32(100000))}, false},
 		{"adobe profile", [][]byte{iccpChunk(adobeProfile())}, true},
 		{"cicp", [][]byte{pngChunkBytes("cICP", []byte{1, 13, 0, 1})}, true},
 		{"invalid profile falls back to gamma", [][]byte{iccpChunk(make([]byte, 200)), pngChunkBytes("gAMA", be32(100000))}, true},
-		{"corrupt iccp ignored", [][]byte{pngChunkBytes("iCCP", []byte("x\x00\x00notzlib"))}, false},
+		{"corrupt iccp requires fallback", [][]byte{pngChunkBytes("iCCP", []byte("x\x00\x00notzlib"))}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

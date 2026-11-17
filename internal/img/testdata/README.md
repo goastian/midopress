@@ -1,6 +1,11 @@
-Fixtures of the WebP decoding test.
+# Generated integration fixtures
 
-`opaque.webp` and `alpha.webp` are 77x65 and 97x65 crops of a Kodak image (made
-available by Kodak for unrestricted use, https://r0k.us/graphics/kodak/), encoded
-with lossy WebP at quality 80. The `.ref.png` files are what libwebp's `dwebp`
-(libwebp 1.5, Debian trixie) makes of them, which is what a browser shows.
+`cmyk-lut.jpg` is a synthetic 192×128 CMYK image with the generated CMYK LUT ICC
+profile from `internal/colorcms/testdata`. It contains no third-party photograph.
+Regenerate with `internal/colorcms/wasm/generate_cmyk_jpeg.c`, a C compiler and
+libjpeg. The integration test compares against independently decoded CMYK pixels
+transformed with the embedded CMS; it requires actual modern recoding.
+
+The AVIF integration fixture is generated during the test from a synthetic
+picture. Its metadata helper attaches primary-item ICC/crop/rotation/mirror
+properties and relocates media offsets without changing coded pixels.

@@ -136,8 +136,13 @@ func TestDeviceProfilesReachTheImagePipeline(t *testing.T) {
 	h := newHarness(t, withConfig(func(c *config.Config) { c.Auth.Mode, c.Auth.DevicesFile = "token", devices }))
 	hints := []string{"Sec-CH-Viewport-Width", "100", "Sec-CH-DPR", "1"}
 	for _, url := range []string{h.plainURL("/image/jpeg"), h.secureURL("/image/jpeg")} {
+		phoneBefore := h.srv.Stats().Snapshot(0).ByProfile["extreme"].Requests
 		_, small := h.get(h.viaUser("phone", phone), url, hints...)
+		assertServedImagePolicy(t, fix().jpeg, small, "extreme")
+		require.Eventually(t, func() bool { return h.srv.Stats().Snapshot(0).ByProfile["extreme"].Requests > phoneBefore }, time.Second, 10*time.Millisecond, "the phone reaches the image pipeline on extreme: %s", url)
+		laptopBefore := h.srv.Stats().Snapshot(0).ByProfile["balanced"].Requests
 		_, big := h.get(h.viaUser("laptop", laptop), url, hints...)
-		assert.Less(t, len(small), len(big)/2, "the phone is on the extreme profile, the laptop on balanced: %s", url)
+		assertServedImagePolicy(t, fix().jpeg, big, "balanced")
+		require.Eventually(t, func() bool { return h.srv.Stats().Snapshot(0).ByProfile["balanced"].Requests > laptopBefore }, time.Second, 10*time.Millisecond, "the laptop reaches the image pipeline on balanced: %s", url)
 	}
 }

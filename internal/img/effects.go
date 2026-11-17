@@ -5,42 +5,14 @@ import (
 	"context"
 	"image"
 	"image/color"
-	"image/jpeg"
 	"image/png"
-
-	"github.com/goastian/midopress/internal/imgmeta"
 )
 
 func (e *Engine) optimizeEffects(ctx context.Context, in Input) (*Result, error) {
 	if in.Profile.Lossless || ctx.Err() != nil {
 		return nil, ErrUnsupported
 	}
-	var src image.Image
-	var err error
-	switch in.Format {
-	case JPEG:
-		meta, e := imgmeta.ParseJPEG(in.Raw)
-		if e != nil || meta.Components == 4 || meta.ICC != nil && imgmeta.ClassifyICC(meta.ICC) != imgmeta.ICCsRGB {
-			return nil, ErrUnsupported
-		}
-		src, err = jpeg.Decode(bytes.NewReader(in.Raw))
-		if err == nil {
-			src = Orient(src, meta.Orientation)
-		}
-	case PNG:
-		meta, e := imgmeta.ParsePNG(in.Raw)
-		if e != nil || meta.Animated || meta.NeedsColorManagement() {
-			return nil, ErrUnsupported
-		}
-		src, err = png.Decode(bytes.NewReader(in.Raw))
-	case WebP, AVIF, JXL:
-		if err = checkModern(in.Format, in.Raw); err != nil {
-			return nil, err
-		}
-		src, err = e.be.Decode(in.Format, in.Raw)
-	default:
-		return nil, ErrUnsupported
-	}
+	src, err := DecodeDisplay(ctx, e.be, in.Format, in.Raw)
 	if err != nil {
 		return nil, err
 	}

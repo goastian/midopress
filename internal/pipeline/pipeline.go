@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"net/netip"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/goastian/midopress/internal/codec"
+	"github.com/goastian/midopress/internal/codecworker"
 	"github.com/goastian/midopress/internal/fonts"
 	"github.com/goastian/midopress/internal/httpx"
 	"github.com/goastian/midopress/internal/img"
@@ -142,7 +144,10 @@ type Config struct {
 	// makes a memory cache of 256 MiB.
 	Cache *xcache.Cache
 	// Backend encodes the images, nil for the WebAssembly one.
-	Backend img.Backend
+	Backend          img.Backend
+	WorkerExecutable string
+	// UnsafeInProcess opts trusted tests and local benchmarks out of isolation.
+	UnsafeInProcess bool
 }
 
 // DefaultConfig returns the defaults.
@@ -196,6 +201,7 @@ type Pipeline struct {
 	memUsed atomic.Int64
 	inst    atomic.Pointer[instruments]
 	pages   *pageHints
+	sandbox SandboxInfo
 
 	capture atomic.Bool
 
@@ -206,6 +212,9 @@ type Pipeline struct {
 
 // New builds a pipeline. Zero values in cfg are replaced by the defaults.
 func New(cfg Config) *Pipeline {
+	if cfg.WorkerExecutable == "" && !cfg.UnsafeInProcess {
+		cfg.WorkerExecutable, _ = os.Executable()
+	}
 	def := DefaultConfig()
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = runtime.GOMAXPROCS(0)
@@ -267,13 +276,25 @@ func New(cfg Config) *Pipeline {
 		cache:  cfg.Cache,
 		sem:    make(chan struct{}, cfg.MaxConcurrent),
 		mem:    semaphore.NewWeighted(cfg.MemoryBudget),
-		pages:  newPageHints(),
+		pages:  newPageHints(cfg.WorkerExecutable, !cfg.UnsafeInProcess),
 	}
 	p.engine.Metric = metric
 	p.engine.OnEncode = p.observeEncode
 	p.live.Store(lv)
 	p.bg = newBackground(p)
-	if cfg.Image.Warmup {
+	p.sandbox.Policy = "disabled-explicit"
+	if !cfg.UnsafeInProcess {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		status, err := codecworker.Inspect(ctx, cfg.WorkerExecutable)
+		cancel()
+		p.sandbox.Status = status
+		if err != nil {
+			p.sandbox.Error = "codec permissions could not be verified; transformations fail closed"
+		} else {
+			p.sandbox.VerifiedAt = time.Now().UTC()
+		}
+	}
+	if cfg.Image.Warmup && cfg.UnsafeInProcess {
 		p.warm.Add(1)
 		go func() {
 			defer p.warm.Done()

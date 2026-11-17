@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/goastian/midopress/internal/codec"
+	"github.com/goastian/midopress/internal/codecworker"
 	"github.com/goastian/midopress/internal/httpx"
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/xcache"
@@ -108,7 +109,7 @@ func hintsFrom(h http.Header) img.Hints {
 func imageKey(plain []byte, prof *img.Profile, caps img.Caps, hints img.Hints, fixed int) string {
 	h := sha256.New()
 	h.Write(plain)
-	_, _ = fmt.Fprintf(h, "|image-v2|%v%v%v|%d|%.2f|%d", caps.WebP, caps.AVIF, caps.JXL, hints.ViewportWidth, hints.DPR, fixed)
+	_, _ = fmt.Fprintf(h, "|image-v3-sandbox|%v%v%v|%d|%.2f|%d", caps.WebP, caps.AVIF, caps.JXL, hints.ViewportWidth, hints.DPR, fixed)
 	_ = json.NewEncoder(h).Encode(prof)
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -208,7 +209,7 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 	plain := wire
 	if srcEnc != codec.None {
 		var decoded bytes.Buffer
-		if err := p.text.Decode(srcEnc, wire, &decoded, ic.MaxBytes); err != nil {
+		if err := p.decode(ctx, srcEnc, wire, &decoded, ic.MaxBytes); err != nil {
 			return withCause(p.writeBuffered(w, resp, wire, in.n, PassError), "content-encoding: "+errCause(err))
 		}
 		plain = decoded.Bytes()
@@ -236,14 +237,20 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 	}
 	fixed := p.quality(req.Header, fl)
 	key := imageKey(plain, prof, caps, hints, fixed)
-	input := img.Input{Raw: plain, Format: kind, Caps: caps, Profile: prof, Hints: hints, Fixed: fixed, Budget: ic.Timeout}
+	input := img.Input{Raw: plain, Format: kind, Caps: caps, Profile: prof, Hints: hints, Fixed: fixed, Budget: ic.Timeout, VerifyQuality: true}
 
 	// What is already done needs no memory for the picture: the cache is asked
 	// before the pixels are counted.
 	entry, ok := p.cache.Get(key)
 	d.hit, d.plain = ok, plain
 	if !ok {
-		width, height, err := codec.ImageSize(codecKind(kind), plain)
+		var width, height int
+		var err error
+		if p.isolated() {
+			width, height, err = codecworker.ImageSize(ctx, p.cfg.WorkerExecutable, plain, int(ic.MaxPixels))
+		} else {
+			width, height, err = codec.ImageSize(codecKind(kind), plain)
+		}
 		if err != nil {
 			return withCause(p.writeBuffered(w, resp, wire, in.n, PassError), "size: "+errCause(err))
 		}
@@ -413,7 +420,7 @@ func (p *Pipeline) runCPU(in img.Input) (res *img.Result, err error) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.Image.Timeout)
 	defer cancel()
-	res, err = p.engine.Optimize(ctx, in)
+	res, err = p.optimize(ctx, in)
 	if err == nil && ctx.Err() != nil {
 		if res == nil {
 			return nil, errTimeout

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -294,6 +295,10 @@ func MemoryBudget(configured config.ByteSize) int64 {
 }
 
 func pipelineConfig(cfg *config.Config) (pipeline.Config, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return pipeline.Config{}, fmt.Errorf("codec worker executable: %w", err)
+	}
 	p := cfg.Pipeline
 	profiles, err := img.BuildProfiles(cfg.Profiles)
 	if err != nil {
@@ -309,16 +314,17 @@ func pipelineConfig(cfg *config.Config) (pipeline.Config, error) {
 	}
 	mode := func(m string) textmin.Mode { return textmin.Mode(m) }
 	return pipeline.Config{
-		MinGain:       p.MinGain,
-		MaxConcurrent: p.MaxConcurrentTranscodes,
-		TranscodeWait: p.TranscodeWait,
-		MemoryBudget:  MemoryBudget(p.MemoryBudget),
-		Profile:       p.Profile,
-		NoTransform:   p.NoTransform,
-		Profiles:      profiles,
-		Rules:         rs,
-		TTL:           pipeline.TTLConfig{Min: cfg.Cache.MinTTL, Max: cfg.Cache.MaxTTL, Default: cfg.Cache.DefaultTTL},
-		Levels:        codec.Levels{Brotli: p.Text.Brotli, Gzip: p.Text.Gzip, Zstd: p.Text.Zstd},
+		WorkerExecutable: executable,
+		MinGain:          p.MinGain,
+		MaxConcurrent:    p.MaxConcurrentTranscodes,
+		TranscodeWait:    p.TranscodeWait,
+		MemoryBudget:     MemoryBudget(p.MemoryBudget),
+		Profile:          p.Profile,
+		NoTransform:      p.NoTransform,
+		Profiles:         profiles,
+		Rules:            rs,
+		TTL:              pipeline.TTLConfig{Min: cfg.Cache.MinTTL, Max: cfg.Cache.MaxTTL, Default: cfg.Cache.DefaultTTL},
+		Levels:           codec.Levels{Brotli: p.Text.Brotli, Gzip: p.Text.Gzip, Zstd: p.Text.Zstd},
 		Text: pipeline.TextConfig{
 			Minify: textmin.Config{
 				HTML: mode(p.Text.Minify.HTML), CSS: mode(p.Text.Minify.CSS), JS: mode(p.Text.Minify.JS),

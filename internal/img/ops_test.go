@@ -97,6 +97,29 @@ func TestOrientKeepsAlpha(t *testing.T) {
 	assert.Equal(t, color.NRGBA{R: 255, A: 100}, out.(*image.NRGBA).NRGBAAt(1, 1))
 }
 
+func TestOrientPreservesSixteenBitChannelsAndHiddenColor(t *testing.T) {
+	src := image.NewNRGBA64(image.Rect(3, 4, 5, 7))
+	for y := src.Rect.Min.Y; y < src.Rect.Max.Y; y++ {
+		for x := src.Rect.Min.X; x < src.Rect.Max.X; x++ {
+			src.SetNRGBA64(x, y, color.NRGBA64{R: uint16(1000*x + y), G: 1111, B: 33333, A: uint16((y - 4) * 30000)})
+		}
+	}
+	for orientation := 2; orientation <= 8; orientation++ {
+		out := Orient(src, orientation)
+		for y := 0; y < src.Rect.Dy(); y++ {
+			for x := 0; x < src.Rect.Dx(); x++ {
+				dx, dy := forward(orientation, x, y, src.Rect.Dx(), src.Rect.Dy())
+				assert.Equal(t, src.NRGBA64At(x+3, y+4), color.NRGBA64Model.Convert(out.At(dx, dy)))
+			}
+		}
+	}
+	a := image.NewNRGBA64(image.Rect(0, 0, 1, 1))
+	b := image.NewNRGBA64(a.Bounds())
+	a.SetNRGBA64(0, 0, color.NRGBA64{R: 123, A: 0})
+	b.SetNRGBA64(0, 0, color.NRGBA64{R: 124, A: 0})
+	assert.False(t, samePixels(a, b), "strict decoded-pixel comparison includes hidden straight-alpha color")
+}
+
 func TestIsOpaque(t *testing.T) {
 	assert.True(t, IsOpaque(image.NewYCbCr(image.Rect(0, 0, 4, 4), image.YCbCrSubsampleRatio420)))
 	assert.True(t, IsOpaque(image.NewGray(image.Rect(0, 0, 4, 4))))
@@ -243,7 +266,7 @@ func TestProfiles(t *testing.T) {
 	assert.Greater(t, ps[ProfileSaver].TargetSSIM, ps[ProfileExtreme].TargetSSIM)
 	assert.False(t, ps[ProfileBalanced].ResizeToViewport, "balanced never changes the dimensions")
 	assert.True(t, ps[ProfileSaver].ResizeToViewport)
-	assert.True(t, ps[ProfileExtreme].AnimatedToStill)
+	assert.False(t, ps[ProfileExtreme].AnimatedToStill, "every factory profile preserves animation frames")
 	assert.False(t, ps[ProfileSaver].AnimatedToStill)
 	assert.GreaterOrEqual(t, ps[ProfileExtreme].Text.BrotliStatic, ps[ProfileBalanced].Text.BrotliStatic)
 }

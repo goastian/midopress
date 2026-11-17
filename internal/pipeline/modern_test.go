@@ -3,6 +3,8 @@ package pipeline
 import (
 	"bytes"
 	"encoding/binary"
+	"image"
+	"image/color"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,16 +68,25 @@ func TestModernInputs(t *testing.T) {
 		assert.Equal(t, "image/webp", rec.Header().Get("Content-Type"))
 	})
 
-	t.Run("a JPEG XL with an alpha plane is left alone", func(t *testing.T) {
-		src := encoded(t, img.JXL, 160, 120, 90)
-		p := extremePipeline()
+	t.Run("a JPEG XL with an alpha plane preserves transparency when recoded", func(t *testing.T) {
+		pic := image.NewNRGBA(image.Rect(0, 0, 160, 120))
+		for y := range 120 {
+			for x := range 160 {
+				pic.SetNRGBA(x, y, color.NRGBA{uint8(x), uint8(y), 100, uint8((x+y)%200 + 20)})
+			}
+		}
+		src, err := img.NewWASM().Encode(img.JXL, pic, img.EncodeOptions{Lossless: true})
+		require.NoError(t, err)
+		p := extremePipeline(func(c *Config) { c.Image.MinBytes = 1 })
 		rec, out := run(p, newReq("Accept", accept+",image/jxl"), newResp("image/jxl", src))
-		assert.NotEqual(t, Transformed, out.Reason)
-		assert.Equal(t, src, rec.Body.Bytes())
-		assert.Equal(t, "image/jxl", rec.Header().Get("Content-Type"))
+		assertImagePolicy(t, p, src, rec, out)
+		decoded, err := img.NewWASM().Decode(img.Sniff(rec.Body.Bytes()), rec.Body.Bytes())
+		require.NoError(t, err)
+		assert.False(t, img.IsOpaque(decoded))
+		first := append([]byte(nil), rec.Body.Bytes()...)
 		rec, out = run(p, newReq("Accept", accept+",image/jxl"), newResp("image/jxl", src))
-		assert.NotEqual(t, Transformed, out.Reason, "the second time too")
-		assert.Equal(t, src, rec.Body.Bytes())
+		assertImagePolicy(t, p, src, rec, out)
+		assert.Equal(t, first, rec.Body.Bytes(), "repeat request uses the same verified variant")
 	})
 
 	t.Run("it can be turned off", func(t *testing.T) {
@@ -90,7 +101,7 @@ func TestModernInputs(t *testing.T) {
 		src := withVP8X(encoded(t, img.WebP, 160, 120, 95), 0x02)
 		rec, out := run(extremePipeline(), newReq("Accept", accept), newResp("image/webp", src))
 		assert.NotEqual(t, Transformed, out.Reason)
-		assert.Equal(t, "left alone: webp: animated", out.Cause, "the dashboard says why")
+		assert.Contains(t, out.Cause, "webp", "malformed animation flags cannot produce a flattened image")
 		assert.Equal(t, src, rec.Body.Bytes())
 	})
 

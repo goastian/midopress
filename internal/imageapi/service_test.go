@@ -3,7 +3,6 @@ package imageapi
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"image"
 	"image/png"
@@ -41,16 +40,7 @@ func service(t *testing.T) *Service {
 	s, err := New(Options{Key: bytes.Repeat([]byte{42}, 32), PublicURL: "https://images.example.com",
 		MaxBytes: 1 << 20, MaxPixels: 100_000, MaxWidth: 4096, MaxDPR: 3, Concurrency: 1,
 		Timeout: time.Second, SignatureTTL: time.Minute, CacheTTL: time.Minute, Backend: "wasm",
-		Profiles: img.Profiles, Transform: func(ctx context.Context, j Job) (*Output, error) {
-			var in, out bytes.Buffer
-			require.NoError(t, json.NewEncoder(&in).Encode(j))
-			if err := RunWorker(&in, &out); err != nil {
-				return nil, err
-			}
-			var result Output
-			err := json.NewDecoder(&out).Decode(&result)
-			return &result, err
-		}})
+		Profiles: img.Profiles, Transform: Process(os.Args[0])})
 	require.NoError(t, err)
 	raw := fixture(t)
 	s.transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -241,11 +231,8 @@ func TestWorkerLimitsAndCancellation(t *testing.T) {
 	assert.NoError(t, checkPixels(raw, img.PNG, 768))
 	assert.Error(t, checkPixels(raw, img.PNG, 767))
 	assert.Error(t, checkPixels([]byte("<svg/>"), img.Unknown, 1000))
-	var in, out bytes.Buffer
-	require.NoError(t, json.NewEncoder(&in).Encode(Job{Raw: raw, Request: Request{Mode: "original"}, Backend: "wasm", MaxPixels: 1000}))
-	require.NoError(t, RunWorker(&in, &out))
-	var result Output
-	require.NoError(t, json.Unmarshal(out.Bytes(), &result))
+	result, err := Process(os.Args[0])(context.Background(), Job{Raw: raw, Request: Request{Mode: "original"}, Backend: "wasm", MaxPixels: 1000})
+	require.NoError(t, err)
 	assert.Equal(t, raw, result.Data)
 	if os.PathSeparator == '/' {
 		worker := filepath.Join(t.TempDir(), "slow-worker")

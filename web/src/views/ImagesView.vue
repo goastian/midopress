@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api/client'
-import type { ImageAPIInfo } from '../api/types'
+import type { ImageAPIInfo, ImageCredential } from '../api/types'
 import { bytes } from '../composables/format'
 
 const info = ref<ImageAPIInfo | null>(null)
@@ -17,6 +17,14 @@ const original = ref('')
 const optimized = ref('')
 const fallback = ref('')
 const showOriginal = ref(false)
+const credential = ref<ImageCredential | null>(null)
+const credentialHosts = ref('www.gstatic.com, i.ytimg.com')
+const credentialWidth = ref(1024)
+const credentialDPR = ref(2)
+const credentialMinutes = ref(30)
+const credentialBusy = ref(false)
+const credentialError = ref('')
+const credentialCopied = ref(false)
 const report = ref<{ before: number; after: number; ms: number; cache: string; decision: string; metric: string; measure: string; backend: string } | null>(null)
 let controller: AbortController | null = null
 const saved = computed(() => report.value ? ((1 - report.value.after / report.value.before) * 100).toFixed(1) : '0')
@@ -93,6 +101,24 @@ async function compare() {
     }
   } finally { if (!signal.aborted) busy.value = false }
 }
+
+async function mintCredential() {
+  credentialBusy.value = true
+  credentialError.value = ''
+  credential.value = null
+  credentialCopied.value = false
+  try {
+    credential.value = await api.imageCredential({ hosts: credentialHosts.value.split(/[\s,]+/).filter(Boolean),
+      profiles: [profile.value], max_width: credentialWidth.value, max_dpr: credentialDPR.value,
+      ttl_seconds: credentialMinutes.value * 60 })
+  } catch (e) { credentialError.value = e instanceof Error ? e.message : 'Unable to issue credential.' }
+  finally { credentialBusy.value = false }
+}
+async function copyCredential() {
+  if (!credential.value) return
+  try { await navigator.clipboard.writeText(credential.value.token); credentialCopied.value = true }
+  catch { credentialError.value = 'Clipboard unavailable. Select and copy the credential field.' }
+}
 </script>
 
 <template>
@@ -118,6 +144,24 @@ async function compare() {
       <div class="preview"><img :src="showOriginal || !optimized ? original : optimized" :alt="showOriginal ? 'Original image' : 'Optimized image'" @error="error = 'This browser cannot display the chosen format. Select Browser formats or open the original.'; showOriginal = true" /></div>
       <p class="hint">The same display size is used for both versions. Metric scores describe the configured comparison; they do not guarantee identical perception for every viewer.</p>
     </section>
+    <form class="sec" @submit.prevent="mintCredential">
+      <div class="sec-head"><h2>Browser extension credential</h2></div>
+      <p class="hint">Issue access for public images from specific hosts and the selected profile. The extension receives this limited credential; the administrator token and signing key stay on the server.</p>
+      <label class="field">Allowed image hosts<input v-model="credentialHosts" class="input" required placeholder="images.example.com, *.cdn.example.com" /></label>
+      <div class="options">
+        <label class="field">Maximum CSS width<input v-model.number="credentialWidth" class="input" type="number" min="1" :max="info?.max_width ?? 4096" required /></label>
+        <label class="field">Maximum DPR<input v-model.number="credentialDPR" class="input" type="number" min="1" :max="info?.max_dpr ?? 3" step="0.25" required /></label>
+        <label class="field">Expires in minutes<input v-model.number="credentialMinutes" class="input" type="number" min="1" max="60" required /></label>
+      </div>
+      <button class="btn" :disabled="credentialBusy || !info?.enabled">{{ credentialBusy ? 'Issuing…' : 'Issue extension credential' }}</button>
+      <p v-if="credentialError" role="alert" class="notice err">{{ credentialError }}</p>
+      <div v-if="credential" class="stack">
+        <label class="field">Extension API origin<input class="input mono" :value="credential.public_url" readonly /></label>
+        <label class="field">Limited credential<input class="input mono" type="password" :value="credential.token" readonly autocomplete="off" /></label>
+        <button class="btn" type="button" @click="copyCredential">{{ credentialCopied ? 'Copied' : 'Copy limited credential' }}</button>
+        <p class="hint">Profile {{ credential.scope.profiles.join(', ') }}. Expires {{ new Date(credential.scope.expires * 1000).toLocaleString() }}. Up to 120 signatures per minute; requests outside the scope retain the original image.</p>
+      </div>
+    </form>
   </div>
 </template>
 

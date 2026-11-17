@@ -29,7 +29,7 @@ var benchAccept = map[string]string{
 // its background work, several times, which is what a proxy does when the same
 // pages are visited again. It reports, for each pass, how many lookups the
 // cache answered and how long a request took.
-func benchPipeline(images []benchImage, passes int, profiles, capsList string, hints img.Hints, metric string, be img.Backend, jobs int, stdout, stderr io.Writer) int {
+func benchPipeline(images []benchImage, passes int, profiles, capsList string, hints img.Hints, metric string, be img.Backend, jobs int, stdout, stderr io.Writer, executable string) int {
 	profile := splitList(profiles)[0]
 	capName := splitList(capsList)[0]
 	accept, ok := benchAccept[capName]
@@ -45,6 +45,12 @@ func benchPipeline(images []benchImage, passes int, profiles, capsList string, h
 	cfg.Image.MaxBytes = 64 << 20
 	cfg.Image.MaxPixels = 100_000_000
 	cfg.Backend = be
+	cfg.WorkerExecutable = executable
+	cfg.UnsafeInProcess = executable == ""
+	if executable != "" {
+		cfg.Image.MaxPixels = 16_000_000
+		cfg.Image.Warmup = false
+	}
 	cfg.Cache = cache
 	pl := pipeline.New(cfg)
 	defer pl.Close()

@@ -23,6 +23,7 @@ type live struct {
 	// texts holds two codecs per profile: for responses that change on every
 	// request, and for those that look cacheable and can afford a slow level.
 	texts  map[string][2]*codec.Text
+	levels map[string][2]codec.Levels
 	minify textmin.Config
 	min    *textmin.Minifier
 	rules  *rules.RuleSet
@@ -46,6 +47,7 @@ func newLive(cfg *Config) (*live, error) {
 		profile:  cfg.Profile,
 		profiles: profiles,
 		texts:    make(map[string][2]*codec.Text, len(profiles)),
+		levels:   make(map[string][2]codec.Levels, len(profiles)),
 		minify:   cfg.Text.Minify,
 		min:      textmin.New(cfg.Text.Minify),
 		rules:    cfg.Rules,
@@ -67,6 +69,7 @@ func newLive(cfg *Config) (*live, error) {
 		}
 		static := l.WithBrotli(max(l.Brotli, prof.Text.BrotliStatic))
 		lv.texts[name] = [2]*codec.Text{codec.NewText(l), codec.NewText(static)}
+		lv.levels[name] = [2]codec.Levels{l, static}
 	}
 	return lv, nil
 }

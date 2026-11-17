@@ -1,10 +1,12 @@
 package pipeline
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/goastian/midopress/internal/codecworker"
 	"github.com/goastian/midopress/internal/htmlhints"
 	"github.com/goastian/midopress/internal/lru"
 	"github.com/goastian/midopress/internal/textmin"
@@ -25,19 +27,33 @@ const (
 )
 
 type pageHints struct {
-	widths    *lru.Cache[string, int]
-	integrity *lru.Cache[string, struct{}]
+	widths     *lru.Cache[string, int]
+	integrity  *lru.Cache[string, struct{}]
+	executable string
+	isolated   bool
 }
 
-func newPageHints() *pageHints {
+func newPageHints(executable string, isolated bool) *pageHints {
 	return &pageHints{
+		executable: executable, isolated: isolated,
 		widths:    lru.New[string, int](pageEntries, pageMemory),
 		integrity: lru.New[string, struct{}](pageEntries, pageMemory),
 	}
 }
 
 func (h *pageHints) learn(req *http.Request, page []byte) {
-	pg := htmlhints.Scan(page, requestURL(req), pageScanBytes)
+	var pg htmlhints.Page
+	if h.isolated {
+		ctx, cancel := context.WithTimeout(req.Context(), time.Second)
+		defer cancel()
+		var err error
+		pg, err = codecworker.PageHints(ctx, h.executable, requestURL(req), page)
+		if err != nil {
+			return
+		}
+	} else {
+		pg = htmlhints.Scan(page, requestURL(req), pageScanBytes)
+	}
 	for u, w := range pg.Images {
 		if cur, _ := h.widths.Get(u); w > cur {
 			h.widths.Add(u, w)

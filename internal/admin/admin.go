@@ -147,6 +147,7 @@ func (s *Server) routes() {
 	get("/api/v1/about", s.handleAbout)
 	get("/api/v1/images", s.handleImages)
 	send("POST", "/api/v1/images/sign", s.handleSignImage)
+	send("POST", "/api/v1/images/credentials", s.handleImageCredential)
 	get("/api/v1/stats", s.handleStats)
 	get("/api/v1/stats/missed", s.handleMissed)
 	get("/api/v1/events", s.handleEvents)

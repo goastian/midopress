@@ -6,7 +6,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x))
 
 const BUILTIN = {
   lossless: {
-    lossless: true, target_dssim: 0, target_ssim: 1, target_ssimulacra2: 100, attempts: 1,
+    lossless: true, quality_policy: 'pixels', target_dssim: 0, target_ssim: 1, target_ssimulacra2: 100, attempts: 1,
     formats: ['jxl', 'webp'], resize_to_viewport: false, photo_colors: 0, quantize_png: false,
     animated_to_still: false, animated_quality: 100, avif_effort: 0, no_transform: 'respect', minify_js: false,
     text: { brotli: 5, gzip: 6, zstd: 5, brotli_static: 11, static_wait_ms: 300 },
@@ -26,7 +26,7 @@ const BUILTIN = {
   extreme: {
     lossless: false, target_dssim: 0.015, target_ssim: 0.94, target_ssimulacra2: 40, attempts: 6,
     formats: ['avif', 'webp'], resize_to_viewport: true, photo_colors: 1024, quantize_png: true,
-    animated_to_still: true, animated_quality: 30, avif_effort: 5, no_transform: 'images', minify_js: true,
+    animated_to_still: false, animated_quality: 30, avif_effort: 5, no_transform: 'images', minify_js: true,
     text: { brotli: 11, gzip: 9, zstd: 19, brotli_static: 11, static_wait_ms: 1500 },
   },
 }
@@ -66,9 +66,11 @@ function initialState() {
 function checkOverride(o) {
   const out = []
   if (!isObj(o)) return [issue(-1, 'profile', 'the profile must be an object')]
-  const allowed = ['base', 'target_dssim', 'target_ssim', 'target_ssimulacra2', 'attempts', 'formats',
+  const allowed = ['base', 'quality_policy', 'color_policy', 'target_dssim', 'target_ssim', 'target_ssimulacra2', 'attempts', 'formats',
     'resize_to_viewport', 'photo_colors', 'quantize_png', 'animated_to_still', 'animated_quality', 'avif_effort', 'no_transform', 'minify_js', 'text']
   for (const k of Object.keys(o)) if (!allowed.includes(k)) out.push(issue(-1, k, `unknown field "${k}"`))
+  if (o.quality_policy !== undefined && !['metric', 'pixels'].includes(o.quality_policy)) out.push(issue(-1, 'quality_policy', 'quality_policy must be metric or pixels'))
+  if (o.color_policy !== undefined && !['preserve', 'srgb'].includes(o.color_policy)) out.push(issue(-1, 'color_policy', 'color_policy must be preserve or srgb'))
   const range = (k, lo, hi, int) => {
     if (o[k] === undefined) return
     if (!isNum(o[k]) || o[k] < lo || o[k] > hi || (int && !Number.isInteger(o[k]))) {
@@ -182,7 +184,7 @@ export class ConfigStore {
     }
     return {
       name, builtin, modified: builtin && Boolean(this.overrides[name]),
-      ...info, lossless: BUILTIN[base].lossless, override: clone(override),
+      ...info, quality_policy: info.quality_policy ?? 'metric', color_policy: info.color_policy ?? 'preserve', lossless: BUILTIN[base].lossless, override: clone(override),
     }
   }
 

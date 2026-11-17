@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/goastian/midopress/internal/img"
@@ -37,11 +38,13 @@ type Options struct {
 }
 
 type Service struct {
-	o         Options
-	transport http.RoundTripper
-	cache     *xcache.Cache
-	slots     chan struct{}
-	now       func() time.Time
+	o            Options
+	transport    http.RoundTripper
+	cache        *xcache.Cache
+	slots        chan struct{}
+	now          func() time.Time
+	credentialMu sync.Mutex
+	credentials  map[string]credentialWindow
 }
 
 func New(o Options) (*Service, error) {
@@ -79,6 +82,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Access-Control-Allow-Origin", "*")
 	h.Set("Access-Control-Expose-Headers", "X-MidoPress-Original-Bytes, X-MidoPress-Result-Bytes, X-MidoPress-Cache, X-MidoPress-Decision, X-MidoPress-Metric, X-MidoPress-Measure, X-MidoPress-Backend, Server-Timing")
+	if r.URL.Path == "/img/sign" {
+		s.serveSigner(w, r)
+		return
+	}
 	if r.URL.Path != "/img" {
 		s.fail(w, http.StatusNotFound, "not_found")
 		return

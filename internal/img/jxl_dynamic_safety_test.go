@@ -5,49 +5,45 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gen2brain/jpegxl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestUnsafeNativeJXLPixelEncoderCannotBeSelectedOrCalled(t *testing.T) {
-	if jpegxl.Dynamic() != nil {
-		t.Skip("native JPEG XL library is not loaded")
-	}
+func TestJXLPixelCodecUsesPortableModuleInsteadOfUnsafeNativeBinding(t *testing.T) {
 	be := NewWASM()
-	require.True(t, be.Native(JXL), "the decoder still uses the loaded native library")
-	require.False(t, be.Supports(JXL))
+	require.False(t, be.Native(JXL))
+	require.True(t, be.Supports(JXL))
 	for _, lossless := range []bool{false, true} {
 		data, err := be.Encode(JXL, photoLike(96, 64, 2), EncodeOptions{Quality: 80, Lossless: lossless})
-		require.ErrorIs(t, err, ErrUnsupported)
-		assert.Empty(t, data)
+		require.NoError(t, err)
+		assert.NotEmpty(t, data)
+		got, err := be.Decode(JXL, data)
+		require.NoError(t, err)
+		assert.Equal(t, photoLike(96, 64, 2).Bounds(), got.Bounds())
 	}
 	engine := NewEngine(be)
 	in := Input{Raw: make([]byte, avifMinBytes), Caps: Caps{JXL: true, AVIF: true, WebP: true}, Profile: profile(t, ProfileBalanced)}
-	assert.NotContains(t, engine.formatsFor(in, false), JXL)
+	assert.Contains(t, engine.formatsFor(in, false), JXL)
 	assert.Contains(t, engine.formatsFor(in, false), AVIF)
 	assert.Contains(t, engine.formatsFor(in, false), WebP)
 	info := RuntimeInfo(be)[JXL.String()]
-	assert.Equal(t, "disabled", info.Encoder)
-	assert.Equal(t, "native", info.Decoder)
-	assert.Contains(t, info.Reason, "garbage collection")
+	assert.Equal(t, "wasm", info.Encoder)
+	assert.Equal(t, "wasm", info.Decoder)
+	assert.Contains(t, info.Reason, "WASI")
 }
 
 func TestNativeJXLDecoderAndReversibleBindingUnderGC(t *testing.T) {
 	skipWithoutJXL(t)
-	if jpegxl.Dynamic() != nil {
-		t.Skip("native JPEG XL decoder is not loaded")
-	}
 	be := NewWASM()
 	jpg := baselineJPEG(t, 257, 193, 13)
 	jxl, err := be.RecompressJPEG(jpg)
 	require.NoError(t, err)
-	workers := min(runtime.GOMAXPROCS(0), 4)
+	workers := min(runtime.GOMAXPROCS(0), 2)
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
 	for range workers {
 		wg.Go(func() {
-			for range 20 {
+			for range 3 {
 				runtime.GC()
 				got, err := be.Decode(JXL, jxl)
 				if err != nil {

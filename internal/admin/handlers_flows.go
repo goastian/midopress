@@ -1,20 +1,17 @@
 package admin
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
-	"image"
-	_ "image/gif" // the formats the proxy meets
-	_ "image/jpeg"
-	_ "image/png"
 	"net/http"
+	"os"
 	"strconv"
 	"sync/atomic"
+	"time"
 
+	"github.com/goastian/midopress/internal/codecworker"
 	"github.com/goastian/midopress/internal/flows"
-	"github.com/goastian/midopress/internal/img"
-	"github.com/goastian/midopress/internal/quality"
 	"github.com/goastian/midopress/internal/rules"
 )
 
@@ -143,17 +140,6 @@ func (s *Server) handleFlowBody(original bool) http.HandlerFunc {
 	}
 }
 
-// decode turns a kept body into pixels, whatever its format.
-func (s *Server) decode(b *flows.Body) (image.Image, error) {
-	f := img.Sniff(b.Data)
-	switch f {
-	case img.WebP, img.AVIF, img.JXL:
-		return s.d.Backend.Decode(f, b.Data)
-	}
-	m, _, err := image.Decode(bytes.NewReader(b.Data))
-	return m, err
-}
-
 func (s *Server) handleFlowCompare(w http.ResponseWriter, r *http.Request) {
 	o, res, ok := s.d.Flows.Bodies(r.PathValue("id"))
 	if !ok {
@@ -167,16 +153,13 @@ func (s *Server) handleFlowCompare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := flowCompare{Metric: "dssim", OriginalBytes: len(o.Data), ResultBytes: len(res.Data)}
-	a, err1 := s.decode(o)
-	b, err2 := s.decode(res)
-	if err1 != nil || err2 != nil {
-		writeJSON(w, http.StatusOK, out)
-		return
-	}
-	out.Width, out.Height = b.Bounds().Dx(), b.Bounds().Dy()
-	if a.Bounds().Size() == b.Bounds().Size() {
-		if d, err := quality.DSSIM(a, b); err == nil {
-			out.Distance, out.Comparable = d, true
+	executable, err := os.Executable()
+	if err == nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		comparison, err := codecworker.Compare(ctx, executable, s.d.Backend.Name(), o.Data, res.Data, 16_000_000)
+		if err == nil {
+			out.Width, out.Height, out.Distance, out.Comparable = comparison.Width, comparison.Height, comparison.Distance, comparison.Comparable
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

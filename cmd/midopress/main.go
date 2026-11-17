@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"syscall"
 
+	"github.com/goastian/midopress/internal/codecworker"
 	"github.com/goastian/midopress/internal/config"
 	"github.com/goastian/midopress/internal/imageapi"
 	"github.com/goastian/midopress/internal/server"
@@ -48,6 +49,11 @@ func main() {
 func run(args []string, stdout, stderr io.Writer, environ []string) int {
 	if len(args) > 0 && len(args[0]) > 0 && args[0][0] != '-' {
 		switch args[0] {
+		case "codec-worker":
+			if err := codecworker.Run(os.Stdin, stdout); err != nil {
+				return 1
+			}
+			return 0
 		case "image-worker":
 			if err := imageapi.RunWorker(os.Stdin, stdout); err != nil {
 				return 1

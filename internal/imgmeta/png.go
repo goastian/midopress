@@ -40,11 +40,14 @@ type PNG struct {
 	HasPalette, HasTransparency bool
 	// ICC is the inflated iCCP profile, nil when absent or unreadable.
 	ICC                                            []byte
+	HasICC, InvalidColor                           bool
 	HasSRGB, HasGamma, HasChroma, HasEXIF, HasCICP bool
 	// Gamma is the decoding exponent derived from the gAMA chunk, i.e. the
 	// reciprocal of the stored file gamma: 2.2 for the usual value 0.45455.
 	// It is 0 when the chunk is absent.
-	Gamma float64
+	Gamma          float64
+	Chromaticities [8]float64
+	CICP           [4]uint8
 	// Orientation is the EXIF orientation found in an eXIf chunk, 1 when
 	// absent or invalid.
 	Orientation int
@@ -184,23 +187,33 @@ func (p *PNG) interpret(raw []byte, c *pngChunk) error {
 			p.Animated = true
 		}
 	case "sRGB":
+		p.InvalidColor = p.InvalidColor || p.HasSRGB || len(d) != 1 || len(d) == 1 && d[0] > 3
 		if len(d) == 1 {
 			p.HasSRGB = true
 		}
 	case "gAMA":
+		p.InvalidColor = p.InvalidColor || p.HasGamma || len(d) != 4
+		p.HasGamma = true
 		if len(d) == 4 {
 			if v := binary.BigEndian.Uint32(d); v != 0 {
-				p.HasGamma = true
 				p.Gamma = 100000 / float64(v)
+			} else {
+				p.InvalidColor = true
 			}
 		}
 	case "cHRM":
+		p.InvalidColor = p.InvalidColor || p.HasChroma || len(d) != 32
+		p.HasChroma = true
 		if len(d) == 32 {
-			p.HasChroma = true
+			for i := range p.Chromaticities {
+				p.Chromaticities[i] = float64(binary.BigEndian.Uint32(d[i*4:])) / 100000
+			}
 		}
 	case "cICP":
+		p.InvalidColor = p.InvalidColor || p.HasCICP || len(d) != 4
+		p.HasCICP = true
 		if len(d) == 4 {
-			p.HasCICP = true
+			copy(p.CICP[:], d)
 		}
 	case "eXIf":
 		p.HasEXIF = true
@@ -210,9 +223,12 @@ func (p *PNG) interpret(raw []byte, c *pngChunk) error {
 			p.Orientation = tiffOrientation(d)
 		}
 	case "iCCP":
+		p.InvalidColor = p.InvalidColor || p.HasICC
+		p.HasICC = true
 		if p.ICC == nil {
 			p.ICC = inflateProfile(d)
 		}
+		p.InvalidColor = p.InvalidColor || len(p.ICC) == 0
 	default:
 		return nil
 	}
@@ -240,7 +256,7 @@ func inflateProfile(d []byte) []byte {
 // that differs from sRGB by more than 2% when no sRGB chunk or usable profile
 // is present, or a cICP chunk.
 func (p *PNG) NeedsColorManagement() bool {
-	if p.HasCICP {
+	if p.InvalidColor || p.HasCICP || p.HasChroma && !p.HasSRGB {
 		return true
 	}
 	class := ClassifyICC(p.ICC)

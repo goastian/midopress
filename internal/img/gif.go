@@ -16,7 +16,10 @@ import (
 const maxAnimationPixels = 48_000_000
 
 func (e *Engine) optimizeGIF(ctx context.Context, in Input) (*Result, error) {
-	if in.VerifyQuality && in.Profile.AnimatedToStill {
+	if NeedsColorConversion(in.Raw, GIF) {
+		return nil, whyNotModern("GIF ICC needs managed animation frames")
+	}
+	if in.Profile.AnimatedToStill {
 		p := *in.Profile
 		p.AnimatedToStill = false
 		in.Profile = &p
@@ -65,31 +68,52 @@ func (e *Engine) stillAsPNG(pic image.Image) *Result {
 }
 
 func (e *Engine) optimizeAnimation(ctx context.Context, in Input, g *stdgif.GIF) (*Result, error) {
-	w, h := g.Config.Width, g.Config.Height
-	n := len(g.Image)
-	if n*w*h > maxAnimationPixels {
+	pixels := int64(g.Config.Width) * int64(g.Config.Height) * int64(len(g.Image))
+	if pixels <= 0 || pixels > maxAnimationPixels {
 		return nil, ErrBudget
 	}
-	if !in.Caps.WebP || !e.be.Supports(WebP) {
+	if !(in.Caps.WebP && e.be.Supports(WebP)) && !(in.Caps.JXL && e.be.Supports(JXL)) {
 		return nil, ErrUnsupported
 	}
+	return e.optimizeFrames(ctx, in, &Animation{
+		Frames: composeFrames(g, len(g.Image)), DelaysMS: browserDelays(g.Delay), LoopCount: webpLoops(g.LoopCount),
+	})
+}
+
+func (e *Engine) optimizeFrames(ctx context.Context, in Input, anim *Animation) (*Result, error) {
+	in.VerifyQuality = true
+	if len(anim.Frames) == 0 || len(anim.DelaysMS) != len(anim.Frames) || anim.LoopCount < 0 {
+		return nil, ErrUnsupported
+	}
+	size := anim.Frames[0].Bounds().Size()
+	pixels64 := int64(size.X) * int64(size.Y) * int64(len(anim.Frames))
+	if pixels64 <= 0 || pixels64 > maxAnimationPixels {
+		return nil, ErrBudget
+	}
+	for i, frame := range anim.Frames {
+		if frame.Bounds().Size() != size || anim.DelaysMS[i] <= 0 {
+			return nil, ErrUnsupported
+		}
+	}
+	f := WebP
+	if !in.Caps.WebP || !e.be.Supports(WebP) {
+		f = JXL
+		if !in.Caps.JXL || !e.be.Supports(JXL) {
+			return nil, ErrUnsupported
+		}
+	}
 	p := in.Profile
-	pixels := n * w * h
+	pixels := int(pixels64)
 	remaining := in.Budget
 	fits := func(cost time.Duration) bool { return in.Budget <= 0 || cost <= remaining }
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	anim := &Animation{
-		Frames:    composeFrames(g, n),
-		DelaysMS:  browserDelays(g.Delay),
-		LoopCount: webpLoops(g.LoopCount),
-	}
 	var best *Result
 	try := func(lossless bool, q int) {
 		start := time.Now()
-		data, err := e.be.EncodeAnimation(WebP, anim, EncodeOptions{Lossless: lossless, Quality: q, Effort: e.losslessEffort(WebP, pixels)})
+		data, err := e.be.EncodeAnimation(f, anim, EncodeOptions{Lossless: lossless, Quality: q, Effort: e.losslessEffort(f, pixels)})
 		remaining -= time.Since(start)
 		if err != nil {
 			return
@@ -101,7 +125,7 @@ func (e *Engine) optimizeAnimation(ctx context.Context, in Input, g *stdgif.GIF)
 			if !ok {
 				return
 			}
-			decoded, err := decoder.DecodeAnimation(WebP, data)
+			decoded, err := decoder.DecodeAnimation(f, data)
 			if err != nil || len(decoded.Frames) != len(anim.Frames) || len(decoded.DelaysMS) != len(anim.DelaysMS) || decoded.LoopCount != anim.LoopCount {
 				return
 			}
@@ -133,7 +157,7 @@ func (e *Engine) optimizeAnimation(ctx context.Context, in Input, g *stdgif.GIF)
 				}
 			}
 		}
-		r := &Result{Data: data, Format: WebP, Lossless: lossless, Attempts: 1, Quality: q, Note: "animated webp"}
+		r := &Result{Data: data, Format: f, Lossless: lossless, Attempts: 1, Quality: q, Note: "animated " + f.String()}
 		r.Metric, r.Measure = metric, measure
 		if lossless {
 			r.Note += " lossless"
@@ -144,18 +168,18 @@ func (e *Engine) optimizeAnimation(ctx context.Context, in Input, g *stdgif.GIF)
 	}
 
 	switch {
-	case in.Fixed > 0:
-		if fits(e.attemptCost(WebP, pixels)) {
+	case in.Fixed > 0 && !p.Lossless:
+		if fits(e.attemptCost(f, pixels)) {
 			try(false, in.Fixed)
 		}
 	default:
 		// Lossless is exact and, for the flat colours GIFs usually have, often
 		// the smaller. Lossy only gets a go when lossless left a lot on the table.
-		if fits(2 * e.attemptCost(WebP, pixels)) {
+		if fits(2 * e.attemptCost(f, pixels)) {
 			try(true, 0)
 		}
 		worthLossy := best == nil || len(best.Data)*100 > len(in.Raw)*35
-		if !p.Lossless && p.AnimatedQuality > 0 && worthLossy && fits(e.attemptCost(WebP, pixels)) && ctx.Err() == nil {
+		if !p.Lossless && p.AnimatedQuality > 0 && worthLossy && fits(e.attemptCost(f, pixels)) && ctx.Err() == nil {
 			try(false, p.AnimatedQuality)
 		}
 	}

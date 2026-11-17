@@ -21,6 +21,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/goastian/midopress/internal/codecworker"
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/imgmeta"
 	"github.com/goastian/midopress/internal/quality"
@@ -57,11 +58,13 @@ type benchRow struct {
 	Changed  bool    `json:"changed"`
 	Note     string  `json:"note,omitempty"`
 	Error    string  `json:"error,omitempty"`
+	Sandbox  string  `json:"sandbox"`
 }
 
 func cmdBench(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("midopress bench", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	unsafeInProcess := fs.Bool("unsafe-in-process", false, "explicitly disable codec sandbox for trusted local benchmark inputs")
 	profiles := fs.String("profiles", "lossless,balanced,saver,extreme", "profiles to run, comma separated")
 	capsList := fs.String("caps", "legacy,webp,modern,all", "client capabilities to simulate: legacy, webp, modern (webp+avif), all (webp+avif+jxl)")
 	jobs := fs.Int("jobs", runtime.NumCPU(), "images processed at the same time")
@@ -91,7 +94,25 @@ func cmdBench(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	images, err := loadBenchImages(fs.Arg(0), *derive, *limit)
+	executable := ""
+	if *unsafeInProcess {
+		_, _ = fmt.Fprintln(stderr, "WARNING: -unsafe-in-process disables codec permissions and resource isolation for this local benchmark.")
+	} else {
+		var err error
+		executable, err = os.Executable()
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "midopress bench: worker executable unavailable")
+			return 1
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, err = codecworker.Inspect(ctx, executable)
+		cancel()
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "midopress bench: codec sandbox unavailable; no inputs processed")
+			return 1
+		}
+	}
+	images, err := loadBenchImages(fs.Arg(0), *derive, *limit, executable)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "midopress bench:", err)
 		return 1
@@ -118,7 +139,7 @@ func cmdBench(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *passes > 0 {
-		return benchPipeline(images, *passes, *profiles, *capsList, hints, *metricName, be0, *jobs, stdout, stderr)
+		return benchPipeline(images, *passes, *profiles, *capsList, hints, *metricName, be0, *jobs, stdout, stderr, executable)
 	}
 	engine := img.NewEngine(be0)
 	engine.Metric = metric
@@ -148,7 +169,7 @@ func cmdBench(args []string, stdout, stderr io.Writer) int {
 				prof = &cp
 			}
 			_, _ = fmt.Fprintf(stderr, "running %s / %s ...\n", capName, profName)
-			rows = append(rows, runBench(engine, images, capName, caps, prof, hints, *budget, *jobs, *verify, *tryAll, *minGain)...)
+			rows = append(rows, runBench(engine, images, capName, caps, prof, hints, *budget, *jobs, *verify, *tryAll, *minGain, executable)...)
 		}
 	}
 
@@ -172,7 +193,7 @@ func splitList(s string) []string {
 	return out
 }
 
-func loadBenchImages(dir, derive string, limit int) ([]benchImage, error) {
+func loadBenchImages(dir, derive string, limit int, executable string) ([]benchImage, error) {
 	var out []benchImage
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -183,11 +204,19 @@ func loadBenchImages(dir, derive string, limit int) ([]benchImage, error) {
 		default:
 			return nil
 		}
-		raw, err := os.ReadFile(path)
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		raw, err := io.ReadAll(io.LimitReader(file, (64<<20)+1))
+		_ = file.Close()
 		if err != nil {
 			return err
 		}
 		name := filepath.Base(path)
+		if len(raw) > 64<<20 {
+			return nil
+		}
 		out = append(out, benchImage{name: name, category: category(name, img.Sniff(raw)), raw: raw, format: img.Sniff(raw)})
 		return nil
 	})
@@ -205,17 +234,28 @@ func loadBenchImages(dir, derive string, limit int) ([]benchImage, error) {
 			if !strings.HasPrefix(b.name, "kodak-") || b.format != img.PNG {
 				continue
 			}
-			m, err := png.Decode(bytes.NewReader(b.raw))
-			if err != nil {
-				continue
+			var encoded []byte
+			if executable != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				encoded, err = codecworker.JPEG(ctx, executable, "wasm", b.raw, quality)
+				cancel()
+			} else {
+				m, err := png.Decode(bytes.NewReader(b.raw))
+				if err != nil {
+					continue
+				}
+				var buf bytes.Buffer
+				if err := stdjpeg.Encode(&buf, m, &stdjpeg.Options{Quality: quality}); err != nil {
+					continue
+				}
+				encoded = buf.Bytes()
 			}
-			var buf bytes.Buffer
-			if err := stdjpeg.Encode(&buf, m, &stdjpeg.Options{Quality: quality}); err != nil {
+			if err != nil {
 				continue
 			}
 			out = append(out, benchImage{
 				name: fmt.Sprintf("%s.q%d.jpg", strings.TrimSuffix(b.name, ".png"), quality), category: "photo-jpeg-derived",
-				raw: buf.Bytes(), format: img.JPEG,
+				raw: encoded, format: img.JPEG,
 			})
 		}
 	}
@@ -241,7 +281,7 @@ func category(name string, f img.Format) string {
 	return f.String()
 }
 
-func runBench(engine *img.Engine, images []benchImage, capName string, caps img.Caps, prof *img.Profile, hints img.Hints, budget time.Duration, jobs int, verify, tryAll bool, minGain float64) []benchRow {
+func runBench(engine *img.Engine, images []benchImage, capName string, caps img.Caps, prof *img.Profile, hints img.Hints, budget time.Duration, jobs int, verify, tryAll bool, minGain float64, executable string) []benchRow {
 	rows := make([]benchRow, len(images))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, max(jobs, 1))
@@ -251,21 +291,43 @@ func runBench(engine *img.Engine, images []benchImage, capName string, caps img.
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			rows[i] = benchOne(engine, b, capName, caps, prof, hints, budget, verify, tryAll, minGain)
+			rows[i] = benchOne(engine, b, capName, caps, prof, hints, budget, verify, tryAll, minGain, executable)
 		}()
 	}
 	wg.Wait()
 	return rows
 }
 
-func benchOne(engine *img.Engine, b benchImage, capName string, caps img.Caps, prof *img.Profile, hints img.Hints, budget time.Duration, verify, tryAll bool, minGain float64) benchRow {
+func benchOne(engine *img.Engine, b benchImage, capName string, caps img.Caps, prof *img.Profile, hints img.Hints, budget time.Duration, verify, tryAll bool, minGain float64, executable string) benchRow {
 	row := benchRow{DSSIM: -1, Name: b.name, Category: b.category, Caps: capName, Profile: prof.Name, Original: len(b.raw), Output: len(b.raw), Format: b.format.String()}
 	ctx, cancel := context.WithTimeout(context.Background(), budget*2)
 	defer cancel()
 	start := time.Now()
-	res, err := engine.Optimize(ctx, img.Input{Raw: b.raw, Format: b.format, Caps: caps, Profile: prof, Hints: hints, Budget: budget, TryAll: tryAll})
+	input := img.Input{Raw: b.raw, Format: b.format, Caps: caps, Profile: prof, Hints: hints, Budget: budget, TryAll: tryAll, Metric: engine.Metric, VerifyQuality: true}
+	var res *img.Result
+	var err error
+	if executable != "" {
+		row.Sandbox = "required"
+		var response *codecworker.Response
+		response, err = codecworker.Call(ctx, executable, codecworker.Request{Operation: "image", Backend: engine.Backend().Name(), Image: input, MaxPixels: 16_000_000, Trace: engine.Trace != nil})
+		if err == nil {
+			res = response.Image
+			row.Sandbox = response.Sandbox.Policy
+			if engine.Trace != nil {
+				for _, line := range response.Trace {
+					engine.Trace("%s", line)
+				}
+			}
+		}
+	} else {
+		row.Sandbox = "disabled-explicit"
+		res, err = engine.Optimize(ctx, input)
+	}
 	row.Millis = float64(time.Since(start).Microseconds()) / 1000
-	if err != nil {
+	if err != nil || res == nil {
+		if err == nil {
+			err = codecworker.ErrWorker
+		}
 		row.Error = err.Error()
 		return row
 	}
@@ -276,7 +338,16 @@ func benchOne(engine *img.Engine, b benchImage, capName string, caps img.Caps, p
 		row.Lossless, row.Note = true, "kept the original"
 	}
 	if verify && row.Changed && !res.Lossless && res.Format != img.GIF {
-		row.DSSIM = verifyResult(engine, b, res, prof, hints)
+		if executable != "" {
+			cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+			comparison, err := codecworker.Compare(cctx, executable, engine.Backend().Name(), b.raw, res.Data, 16_000_000)
+			ccancel()
+			if err == nil && comparison.Comparable {
+				row.DSSIM = comparison.Distance
+			}
+		} else {
+			row.DSSIM = verifyResult(engine, b, res, prof, hints)
+		}
 	}
 	return row
 }

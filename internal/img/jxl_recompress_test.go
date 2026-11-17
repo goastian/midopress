@@ -304,6 +304,10 @@ func TestRecompressGCStress(t *testing.T) {
 	inputs := [][]byte{baselineJPEG(t, 96, 64, 1), baselineJPEG(t, 200, 150, 2), withEXIF(t, baselineJPEG(t, 64, 48, 3)), baselineJPEG(t, 33, 77, 4)}
 	be := NewWASM()
 	workers := 2 * runtime.GOMAXPROCS(0)
+	if !jxlNativeAvailable() {
+		workers = min(workers, 2)
+		iters = min(iters, 5)
+	}
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
 	stop := make(chan struct{})

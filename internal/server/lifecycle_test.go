@@ -187,7 +187,11 @@ func TestGracefulShutdown(t *testing.T) {
 		}
 
 		close(h.release)
-		body, err := io.ReadAll(newGzipReader(t, resp.Body))
+		var stream io.Reader = resp.Body
+		if resp.Header.Get("Content-Encoding") == "gzip" {
+			stream = newGzipReader(t, resp.Body)
+		}
+		body, err := io.ReadAll(stream)
 		require.NoError(t, err)
 		assert.True(t, strings.HasSuffix(string(body), "second chunk"))
 
