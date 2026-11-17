@@ -60,12 +60,16 @@ func (s *scorer) natural(score float64) float64 {
 
 // newScorer prepares the measurement of pic for a profile. Small images, which
 // are usually icons and logos where every pixel is seen, get a stricter target.
-func newScorer(m Metric, pic image.Image, p *Profile) (*scorer, error) {
+func newScorer(m Metric, pic image.Image, p *Profile, full ...bool) (*scorer, error) {
 	pixels := pic.Bounds().Dx() * pic.Bounds().Dy()
+	var opts quality.Options
+	if len(full) > 0 && full[0] {
+		opts.MaxPixels = pixels
+	}
 	icon := pixels > 0 && pixels <= iconPixels
 	switch m {
 	case MetricSSIM:
-		ref, err := quality.NewReference(pic)
+		ref, err := quality.NewReference(pic, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +79,7 @@ func newScorer(m Metric, pic image.Image, p *Profile) (*scorer, error) {
 		}
 		return &scorer{metric: m, eval: ref.Similarity, target: target, margin: 0.004, slope: 0.0016}, nil
 	case MetricSSIMULACRA2:
-		ref, err := quality.NewSSIMULACRA2Reference(pic)
+		ref, err := quality.NewSSIMULACRA2Reference(pic, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -85,7 +89,7 @@ func newScorer(m Metric, pic image.Image, p *Profile) (*scorer, error) {
 		}
 		return &scorer{metric: m, eval: ref.Score, target: target, margin: 0.8, slope: 0.4}, nil
 	}
-	ref, err := quality.NewDSSIMReference(pic)
+	ref, err := quality.NewDSSIMReference(pic, opts)
 	if err != nil {
 		return nil, err
 	}

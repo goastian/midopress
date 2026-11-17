@@ -21,7 +21,7 @@ const rlog = (a, b) => Math.exp(Math.log(a) + Math.random() * (Math.log(b) - Mat
 const hex = (n) => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('')
 const zipf = (list) => wpick(list.map((h, i) => [h, 1 / (i + 1)]))
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x))
-const bucket = () => ({ requests: 0, transformed: 0, bytes_in: 0, bytes_out: 0 })
+const bucket = () => ({ requests: 0, transformed: 0, bytes_in: 0, bytes_out: 0, saved: 0 })
 const iso = (t) => new Date(t).toISOString()
 
 const HOSTS = {
@@ -133,7 +133,7 @@ export class Sim {
   initSeries(now) {
     const sec = Math.floor(now / 1000)
     const min = Math.floor(sec / 60) * 60
-    const zero = (t) => ({ t, requests: 0, bytes_in: 0, bytes_out: 0 })
+    const zero = (t) => ({ t, requests: 0, bytes_in: 0, bytes_out: 0, saved: 0 })
     this.series = {
       seconds: Array.from({ length: 120 }, (_, i) => zero(sec - 119 + i)),
       minutes: Array.from({ length: 180 }, (_, i) => zero(min - (179 - i) * 60)),
@@ -282,6 +282,7 @@ export class Sim {
       if (r.decision === 'transformed') b.transformed++
       b.bytes_in += r.bin
       b.bytes_out += r.bout
+      b.saved = (b.saved ?? 0) + (r.reason === 'error' ? 0 : r.bin - r.bout)
     }
     add(this.totals)
     add(this.byKind[r.kind])
@@ -293,6 +294,7 @@ export class Sim {
     rk.requests++
     rk.bytes_in += r.bin
     rk.bytes_out += r.bout
+    rk.saved = (rk.saved ?? 0) + (r.reason === 'error' ? 0 : r.bin - r.bout)
     const cause = r.decision === 'transformed' ? '' : r.reason === 'type' ? r.ct : r.reason === 'status' ? String(r.status || 206) : ''
     if (cause) {
       const c = (this.byCause[dec + '/' + cause] ||= { reason: dec, cause, requests: 0, bytes_in: 0 })
@@ -304,6 +306,7 @@ export class Sim {
       p.requests++
       p.bytes_in += r.bin
       p.bytes_out += r.bout
+      p.saved += r.reason === 'error' ? 0 : r.bin - r.bout
     }
     if (this.settings.domains) {
       add(this.domainBucket(r.host))
@@ -407,7 +410,7 @@ export class Sim {
     const flow = {
       id, time: iso(now), method: r.method, scheme: r.scheme, host: r.host, path: r.path, status: r.status,
       client: { device: r.client.device, addr: r.client.addr }, kind: r.kind, content_type: r.ct,
-      out_content_type: r.out_ct, bytes_in: r.bin, bytes_out: r.bout, decision: r.decision, reason: r.reason,
+      out_content_type: r.out_ct, bytes_in: r.bin, bytes_out: r.bout, saved: r.reason === 'error' ? 0 : r.bin - r.bout, decision: r.decision, reason: r.reason,
       codec: r.codec, profile: r.profile, duration_ms: r.duration, cache_hit: r.cache_hit, metric: r.metric,
       measure: Number(r.measure.toFixed(5)), has_original: capture, has_result: capture && r.decision === 'transformed',
       request_headers: reqH, response_headers: resH,
@@ -539,10 +542,10 @@ export class Sim {
   snapshot() {
     const now = Date.now()
     this.advance(now)
-    const rb = (b) => ({ requests: Math.round(b.requests), transformed: Math.round(b.transformed), bytes_in: Math.round(b.bytes_in), bytes_out: Math.round(b.bytes_out) })
+    const rb = (b) => ({ requests: Math.round(b.requests), transformed: Math.round(b.transformed), bytes_in: Math.round(b.bytes_in), bytes_out: Math.round(b.bytes_out), saved: Math.round(b.saved) })
     const mapB = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, rb(v)]))
     const t = this.totals
-    const saved = t.bytes_in - t.bytes_out
+    const saved = t.saved
     const c = this.cache
     const lookups = c.hits + c.misses
     const active = this.clients.filter((x) => !x.idle && now - x.last_seen < 120000).length
@@ -575,7 +578,7 @@ export class Sim {
       .sort((a, b) => b.missed_bytes - a.missed_bytes || b.requests - a.requests)
       .slice(0, n)
       .map((m) => ({
-        domain: m.domain, requests: m.requests, transformed: m.transformed, bytes_in: m.bytes_in, bytes_out: m.bytes_out,
+        domain: m.domain, requests: m.requests, transformed: m.transformed, bytes_in: m.bytes_in, bytes_out: m.bytes_out, saved: m.saved,
         missed_bytes: m.missed_bytes, media_bytes: m.media_bytes,
         reasons: [...m.reasons.values()].sort((a, b) => b.bytes_in - a.bytes_in),
       }))

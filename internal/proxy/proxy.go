@@ -338,7 +338,9 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	if out.Err == nil {
 		return
 	}
-	p.upstreamErrs.Add(1)
+	if !errors.Is(out.Err, pipeline.ErrClientWrite) {
+		p.upstreamErrs.Add(1)
+	}
 	if !out.Written {
 		p.writeError(w, http.StatusBadGateway)
 		return

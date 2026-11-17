@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/goastian/midopress/internal/config"
+	"github.com/goastian/midopress/internal/imageapi"
 	"github.com/goastian/midopress/internal/server"
 )
 
@@ -47,6 +48,11 @@ func main() {
 func run(args []string, stdout, stderr io.Writer, environ []string) int {
 	if len(args) > 0 && len(args[0]) > 0 && args[0][0] != '-' {
 		switch args[0] {
+		case "image-worker":
+			if err := imageapi.RunWorker(os.Stdin, stdout); err != nil {
+				return 1
+			}
+			return 0
 		case "serve":
 			return cmdServe(args[1:], stdout, stderr, environ)
 		case "config":

@@ -181,6 +181,10 @@ func colrNCLX(primaries, transfer, matrix uint16, full bool) []byte {
 }
 
 func TestParseAVIF(t *testing.T) {
+	t.Run("oversized properties cannot hide behind an overflowing area", func(t *testing.T) {
+		_, err := ParseAVIF(avif("avif", ispe(64, 64), ispe(^uint32(0), ^uint32(0))))
+		assert.Error(t, err)
+	})
 	t.Run("a still", func(t *testing.T) {
 		a, err := ParseAVIF(avif("avif", ispe(722, 1024), fullBox("pixi", []byte{3, 8, 8, 8})))
 		require.NoError(t, err)

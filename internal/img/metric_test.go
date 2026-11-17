@@ -86,7 +86,11 @@ func TestAVIFIsNotTriedOnTinyFiles(t *testing.T) {
 	p := profile(t, ProfileBalanced)
 	small := Input{Raw: make([]byte, 5_000), Profile: p, Caps: Caps{WebP: true, AVIF: true, JXL: true}}
 	assert.NotContains(t, e.formatsFor(small, false), AVIF)
-	assert.Contains(t, e.formatsFor(small, false), JXL)
+	if e.be.Supports(JXL) {
+		assert.Contains(t, e.formatsFor(small, false), JXL)
+	} else {
+		assert.NotContains(t, e.formatsFor(small, false), JXL)
+	}
 	big := Input{Raw: make([]byte, 50_000), Profile: p, Caps: small.Caps}
 	assert.Contains(t, e.formatsFor(big, false), AVIF)
 	assert.NotContains(t, e.formatsFor(big, true), JPEG, "no JPEG when there is transparency")
@@ -142,17 +146,20 @@ func TestReversibleJPEGXLCompetesInEveryProfile(t *testing.T) {
 		t.Skip("libjxl is not installed")
 	}
 	raw := encodeJPEG(t, photoLike(220, 160, 34), 97)
+	reversible, err := NewWASM().RecompressJPEG(raw)
+	require.NoError(t, err)
 	e := dssimEngine()
 	for _, name := range []string{ProfileLossless, ProfileBalanced, ProfileExtreme} {
 		res := optimizeWith(t, e, Input{Raw: raw, Format: JPEG, Caps: Caps{JXL: true}, Profile: profile(t, name)})
-		assert.Equal(t, JXL, res.Format, name)
+		assert.LessOrEqual(t, len(res.Data), len(reversible), "the reversible candidate competes even without a pixel encoder, %s", name)
 		assert.Less(t, len(res.Data), len(raw), name)
-		if res.Lossless {
+		if res.Format == JXL && res.Lossless {
 			back, err := ReconstructJPEG(res.Data)
 			require.NoError(t, err)
 			assert.Equal(t, raw, back, "%s: the original, bit for bit", name)
 		}
 	}
 	lossless := optimizeWith(t, e, Input{Raw: raw, Format: JPEG, Caps: Caps{JXL: true}, Profile: profile(t, ProfileLossless)})
+	assert.Equal(t, JXL, lossless.Format)
 	assert.True(t, lossless.Lossless, "the lossless profile has nothing else to offer")
 }

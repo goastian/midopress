@@ -13,7 +13,11 @@ import (
 
 func encoded(t testing.TB, f img.Format, w, h, q int) []byte {
 	t.Helper()
-	data, err := img.NewWASM().Encode(f, noisy(w, h), img.EncodeOptions{Quality: q})
+	be := img.NewWASM()
+	if !be.Supports(f) {
+		t.Skipf("%s pixel encoder is unavailable", f)
+	}
+	data, err := be.Encode(f, noisy(w, h), img.EncodeOptions{Quality: q})
 	require.NoError(t, err)
 	return data
 }

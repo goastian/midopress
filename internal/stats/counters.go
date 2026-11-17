@@ -48,16 +48,18 @@ type cell struct {
 	transformed atomic.Uint64
 	bytesIn     atomic.Uint64
 	bytesOut    atomic.Uint64
-	_           [32]byte
+	saved       atomic.Int64
+	_           [24]byte
 }
 
-func (c *cell) add(tr, in, out uint64) {
+func (c *cell) add(tr, in, out uint64, saved int64) {
 	c.requests.Add(1)
 	if tr != 0 {
 		c.transformed.Add(tr)
 	}
 	c.bytesIn.Add(in)
 	c.bytesOut.Add(out)
+	c.saved.Add(saved)
 }
 
 func (c *cell) load() Bucket {
@@ -66,6 +68,7 @@ func (c *cell) load() Bucket {
 		Transformed: c.transformed.Load(),
 		BytesIn:     c.bytesIn.Load(),
 		BytesOut:    c.bytesOut.Load(),
+		Saved:       c.saved.Load(),
 	}
 }
 
@@ -75,6 +78,7 @@ func (b Bucket) plus(o Bucket) Bucket {
 		Transformed: b.Transformed + o.Transformed,
 		BytesIn:     b.BytesIn + o.BytesIn,
 		BytesOut:    b.BytesOut + o.BytesOut,
+		Saved:       b.Saved + o.Saved,
 	}
 }
 

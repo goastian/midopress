@@ -9,6 +9,32 @@
 
 // ---------------------------------------------------------------- stats
 
+export interface ImageAPIInfo {
+  enabled: boolean
+  public_url: string
+  max_bytes: number
+  max_pixels: number
+  max_width: number
+  max_dpr: number
+  timeout_ms: number
+}
+
+export interface ImageRequest {
+  url: string
+  profile: string
+  format: string
+  width: number
+  dpr: number
+  version: string
+}
+
+export interface SignedImage {
+  optimized_url: string
+  original_url: string
+  fallback_url: string
+  expires: string
+}
+
 /** What a group of responses amounted to. */
 export interface Bucket {
   requests: number
@@ -16,11 +42,11 @@ export interface Bucket {
   transformed: number
   bytes_in: number
   bytes_out: number
+  /** Measured savings from complete responses; incomplete transfers contribute zero. */
+  saved: number
 }
 
 export interface Totals extends Bucket {
-  /** bytes_in - bytes_out */
-  saved: number
   /** saved / bytes_in * 100, 0 when nothing went through */
   saved_percent: number
 }
@@ -58,6 +84,7 @@ export interface ConnectionStats {
   tunnel_bytes_down: number
   tls_handshakes: number
   tls_handshake_errors: number
+  auto_passthrough?: number
   upstream_errors: number
   /** requests refused by authentication or access control */
   denied: number
@@ -83,6 +110,7 @@ export interface ReasonStat {
   requests: number
   bytes_in: number
   bytes_out: number
+  saved: number
 }
 
 /** A reason that needs more words: why the pipeline was busy, which media type is not handled, which status was left alone. */
@@ -137,6 +165,7 @@ export interface SeriesPoint {
   requests: number
   bytes_in: number
   bytes_out: number
+  saved: number
 }
 
 export interface Series {
@@ -199,6 +228,7 @@ export interface Flow {
   out_content_type: string
   bytes_in: number
   bytes_out: number
+  saved: number
   decision: 'transformed' | 'passthrough'
   /** transformed, or why it was left alone (type, rule, not-smaller, ...) */
   reason: string
@@ -299,6 +329,8 @@ export interface Rule {
 /** A profile as the configuration describes it, all fields optional. */
 export interface ProfileOverride {
   base?: string
+  grayscale?: boolean
+  placeholder_width?: number
   target_dssim?: number
   target_ssim?: number
   target_ssimulacra2?: number
@@ -325,6 +357,8 @@ export interface ProfileInfo {
   /** true when the configuration changes a built-in profile */
   modified: boolean
   lossless: boolean
+  grayscale: boolean
+  placeholder_width: number
   target_dssim: number
   target_ssim: number
   target_ssimulacra2: number
@@ -459,6 +493,8 @@ export interface About {
   backend: string
   backends: string[]
   native: Record<string, boolean>
+  codecs?: Record<string, { encoder: string; decoder: string; reason: string }>
+  jpeg_recompression?: boolean
   modules: Module[]
   state_dir: string
   proxy_addr: string

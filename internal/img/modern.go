@@ -75,9 +75,6 @@ func (e *Engine) optimizeModern(ctx context.Context, in Input) (*Result, error) 
 	if err := checkModern(in.Format, in.Raw); err != nil {
 		return nil, err
 	}
-	if !e.be.Supports(in.Format) {
-		return nil, whyNotModern("no decoder")
-	}
 	src, err := e.be.Decode(in.Format, in.Raw)
 	if err != nil {
 		return nil, whyNotModern("not decodable")

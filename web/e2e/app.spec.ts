@@ -31,6 +31,45 @@ test('the admin API refuses a request without the token', async ({ request }) =>
   expect((await request.get(`${ADMIN}/api/v1/stats`, { headers: auth })).status()).toBe(200)
 })
 
+test('HTTPS tunnels remain visible when no HTTP content was inspected', async ({ page, request }) => {
+  const snapshot = await (await request.get(`${ADMIN}/api/v1/stats`, { headers: auth })).json()
+  snapshot.totals = { requests: 0, transformed: 0, bytes_in: 0, bytes_out: 0, saved: 0, saved_percent: 0 }
+  for (const key of ['by_kind', 'by_codec', 'by_profile']) snapshot[key] = {}
+  snapshot.by_reason = []
+  snapshot.by_cause = []
+  snapshot.connections = { ...snapshot.connections, tunnels_total: 78, tunnel_bytes_down: 17859039,
+    tunnel_bytes_up: 549451, tls_handshakes: 68, tls_handshake_errors: 68, auto_passthrough: 68 }
+  await page.route('**/api/v1/stats', route => route.fulfill({ json: snapshot }))
+  await page.route('**/api/v1/events', route => route.fulfill({ contentType: 'text/event-stream',
+    body: `event: stats\ndata: ${JSON.stringify(snapshot)}\n\n` }))
+  await signIn(page)
+  await expect(page.locator('#hero-line')).toContainText('received by this proxy')
+  await expect(page.locator('.hero [role="status"]')).toContainText('68 automatic TLS bypasses')
+  await expect(page.locator('.hero .tally')).toContainText('0 inspected HTTP requests')
+  await expect(page.locator('main')).not.toContainText('Nothing has gone through')
+  await expect(page.locator('main')).not.toContainText('Everything the proxy opened was shrunk.')
+  await expect(page.getByText('No inspected HTTP responses yet.').first()).toBeVisible()
+})
+
+test('incomplete downloads do not appear as compression savings', async ({ page, request }) => {
+  const snapshot = await (await request.get(`${ADMIN}/api/v1/stats`, { headers: auth })).json()
+  const bucket = { requests: 1, transformed: 0, bytes_in: 1000000, bytes_out: 0, saved: 0 }
+  snapshot.totals = { ...bucket, saved_percent: 0 }
+  snapshot.by_kind = { image: bucket }
+  snapshot.by_codec = { identity: bucket }
+  snapshot.by_profile = { balanced: bucket }
+  snapshot.by_reason = [{ reason: 'error', kind: 'image', ...bucket }]
+  snapshot.top_domains = []
+  await page.route('**/api/v1/stats', route => route.fulfill({ json: snapshot }))
+  await page.route('**/api/v1/events', route => route.fulfill({ contentType: 'text/event-stream',
+    body: `event: stats\ndata: ${JSON.stringify(snapshot)}\n\n` }))
+  await signIn(page)
+  await expect(page.locator('#hero-line')).toContainText('0 B')
+  await expect(page.locator('.hero .tally')).toContainText('0 B saved of')
+  await expect(page.locator('.hero .tally')).toContainText('Savings exclude incomplete responses.')
+  await expect(page.locator('.reduction .gain')).toHaveAttribute('style', /width: 0%/)
+})
+
 test('a wrong token is refused on the sign in page', async ({ page }) => {
   await page.goto('/#/login')
   await page.getByLabel('Admin token').fill('not-the-token')

@@ -21,6 +21,7 @@ import (
 	"github.com/goastian/midopress/internal/auth"
 	"github.com/goastian/midopress/internal/config"
 	"github.com/goastian/midopress/internal/flows"
+	"github.com/goastian/midopress/internal/imageapi"
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/metrics"
 	"github.com/goastian/midopress/internal/mitm"
@@ -44,6 +45,7 @@ type Deps struct {
 	Level     *slog.LevelVar
 	Registry  *metrics.Registry // nil when the metrics are off
 	Backend   img.Backend
+	Images    *imageapi.Service
 	Auth      *auth.Authenticator
 	CA        *mitm.CA // nil without HTTPS interception
 
@@ -108,7 +110,11 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/debug/") {
 			h.Set("Cache-Control", "no-store")
 		} else {
-			h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+			connect := "'self'"
+			if s.d.Images != nil {
+				connect += " " + s.d.Config().ImageAPI.PublicURL
+			}
+			h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src "+connect+"; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -139,6 +145,8 @@ func (s *Server) routes() {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	get("/api/v1/about", s.handleAbout)
+	get("/api/v1/images", s.handleImages)
+	send("POST", "/api/v1/images/sign", s.handleSignImage)
 	get("/api/v1/stats", s.handleStats)
 	get("/api/v1/stats/missed", s.handleMissed)
 	get("/api/v1/events", s.handleEvents)

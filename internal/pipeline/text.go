@@ -180,8 +180,8 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, req *http.Request, resp *
 			h.Set("Content-Type", e.ContentType)
 			h.Set("Content-Length", strconv.Itoa(len(e.Data)))
 			w.WriteHeader(resp.StatusCode)
-			n, _ := w.Write(e.Data)
-			return Outcome{Reason: Transformed, BytesIn: in.n, BytesOut: int64(n), Written: true, Codec: "woff2", OutType: e.ContentType}
+			n, err := writeResponseBody(w, e.Data)
+			return Outcome{Reason: Transformed, BytesIn: in.n, BytesOut: int64(n), Written: true, Codec: "woff2", OutType: e.ContentType, Err: err}
 		}
 	}
 
@@ -209,6 +209,9 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, req *http.Request, resp *
 	result := plain
 	if target != codec.None {
 		comp, err := p.compress(fl, target, plain, static, resp.Header)
+		if errors.Is(err, errBusy) {
+			return withCause(p.writeBuffered(w, resp, wire, in.n, PassBusy), CauseCPU)
+		}
 		if err != nil {
 			return withCause(p.writeBuffered(w, resp, wire, in.n, PassError), "compress: "+errCause(err))
 		}
@@ -229,12 +232,12 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, req *http.Request, resp *
 	}
 	h.Set("Content-Length", strconv.Itoa(len(result)))
 	w.WriteHeader(resp.StatusCode)
-	n, _ := w.Write(result)
+	n, err := writeResponseBody(w, result)
 	name := target.Token()
 	if target == codec.None {
 		name = "identity"
 	}
-	return Outcome{Reason: Transformed, BytesIn: in.n, BytesOut: int64(n), Written: true, Codec: name, Minified: minified}
+	return Outcome{Reason: Transformed, BytesIn: in.n, BytesOut: int64(n), Written: true, Codec: name, Minified: minified, Err: err}
 }
 
 // markRecoded adjusts the headers of a response whose bytes differ from the
@@ -313,6 +316,13 @@ func (p *Pipeline) compress(fl *flow, target codec.Encoding, plain []byte, stati
 			return e.Data, nil
 		}
 		if len(plain) <= staticInlineMax(prof.Text.BrotliStatic, prof.Text.StaticWaitMS) {
+			select {
+			case p.sem <- struct{}{}:
+				defer p.releaseCPU()
+			default:
+				p.squeezeLater(fl, target, plain, h)
+				return nil, errBusy
+			}
 			var comp bytes.Buffer
 			if err := pair[1].Compress(target, &comp, plain); err != nil {
 				return nil, err
@@ -386,6 +396,7 @@ func (p *Pipeline) textStream(w http.ResponseWriter, req *http.Request, resp *ht
 	// browser asks for them.
 	var seen []byte
 	scanned := 0
+	var writeErr error
 	out := Outcome{Reason: Transformed, Written: true, Codec: target.Token()}
 	for {
 		n, rerr := in.Read(buf)
@@ -399,10 +410,16 @@ func (p *Pipeline) textStream(w http.ResponseWriter, req *http.Request, resp *ht
 				}
 			}
 			if _, werr := sw.Write(buf[:n]); werr != nil {
+				writeErr = werr
 				break
 			}
-			if flush && (sw.Flush() != nil || rc.Flush() != nil) {
-				break
+			if flush {
+				if writeErr = sw.Flush(); writeErr != nil {
+					break
+				}
+				if writeErr = rc.Flush(); writeErr != nil {
+					break
+				}
 			}
 		}
 		if rerr != nil {
@@ -412,8 +429,11 @@ func (p *Pipeline) textStream(w http.ResponseWriter, req *http.Request, resp *ht
 	if learn && len(seen) > scanned {
 		p.pages.learn(req, seen)
 	}
-	_ = sw.Close()
+	closeErr := sw.Close()
 	out.Err = in.err
+	if out.Err == nil {
+		out.Err = clientWriteError(errors.Join(writeErr, closeErr, cw.err))
+	}
 	out.BytesIn, out.BytesOut = in.n, cw.n
 	return out
 }

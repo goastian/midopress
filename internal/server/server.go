@@ -19,6 +19,7 @@ import (
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/config"
 	"github.com/goastian/midopress/internal/flows"
+	"github.com/goastian/midopress/internal/imageapi"
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/magic"
 	"github.com/goastian/midopress/internal/metrics"
@@ -81,6 +82,9 @@ type Server struct {
 	adminLn   net.Listener
 	adminTok  string
 	tokenNew  bool
+	images    *imageapi.Service
+	imageSrv  *http.Server
+	imageLn   net.Listener
 	cancel    context.CancelFunc
 	cfgMu     sync.Mutex
 
@@ -269,6 +273,9 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 	s.mitmSrv = newHTTP(s.proxy.MITMHandler())
 	s.mitmSrv.ConnContext = s.proxy.ConnContext
 
+	if err := s.newImageAPI(); err != nil {
+		return nil, err
+	}
 	if err := s.newAdmin(); err != nil {
 		return nil, err
 	}
@@ -362,6 +369,13 @@ func (s *Server) Listen() error {
 		ln = newTLSListener(ln, s.tlsConf, s.cfg.Server.TLSHandshakeTimeout)
 	}
 	s.ln = ln
+	if err := s.listenImages(); err != nil {
+		_ = s.ln.Close()
+		if s.adminLn != nil {
+			_ = s.adminLn.Close()
+		}
+		return err
+	}
 	return nil
 }
 
@@ -434,6 +448,9 @@ func (s *Server) reloadConfig() error {
 
 // apply puts a configuration in force. The caller holds cfgMu.
 func (s *Server) apply(cfg *config.Config) error {
+	if cfg.ImageAPI != s.cfg.ImageAPI {
+		return errors.New("image_api listener, key and limits require a restart")
+	}
 	if err := Check(cfg); err != nil {
 		return err
 	}
@@ -490,7 +507,18 @@ func (s *Server) Run(ctx context.Context) error {
 		defer func() { _ = metricsSrv.Close() }()
 	}
 
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
+	if s.imageSrv != nil {
+		defer s.images.Close()
+		defer func() { _ = s.imageSrv.Close() }()
+		go func() {
+			if a := s.cfg.ImageAPI; a.TLS.Cert != "" {
+				errc <- s.imageSrv.ServeTLS(s.imageLn, a.TLS.Cert, a.TLS.Key)
+			} else {
+				errc <- s.imageSrv.Serve(s.imageLn)
+			}
+		}()
+	}
 	go func() { errc <- s.main.Serve(s.ln) }()
 	go func() { errc <- s.mitmSrv.Serve(s.proxy.MITMListener()) }()
 
@@ -508,7 +536,10 @@ func (s *Server) Run(ctx context.Context) error {
 	defer cancel()
 	s.proxy.Stop()
 	var errs []error
-	for _, srv := range []*http.Server{s.main, s.mitmSrv} {
+	for _, srv := range []*http.Server{s.main, s.mitmSrv, s.imageSrv} {
+		if srv == nil {
+			continue
+		}
 		if err := srv.Shutdown(grace); err != nil {
 			_ = srv.Close()
 			errs = append(errs, err)

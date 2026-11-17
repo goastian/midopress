@@ -35,7 +35,7 @@ func (s *Server) snapshot() StatsSnapshot {
 		Connections: connectionsView{
 			ClientsActive: s.d.Collector.ActiveClients(activeWindow), RequestsInFlight: ps.InFlight,
 			TunnelsActive: ps.TunnelsActive, TunnelsTotal: ps.Tunnels, TunnelBytesUp: ps.TunnelBytesUp, TunnelBytesDown: ps.TunnelBytesDown, TLSHandshakes: ps.TLSHandshakes,
-			TLSHandshakeErrors: ps.TLSHandshakeErrs, UpstreamErrors: ps.UpstreamErrors, Denied: ps.Denied,
+			TLSHandshakeErrors: ps.TLSHandshakeErrs, AutoPassthrough: ps.AutoPassthrough, UpstreamErrors: ps.UpstreamErrors, Denied: ps.Denied,
 		},
 		CPU: cpuView{Slots: slots, Busy: busy, BackgroundQueue: queued},
 	}
@@ -75,6 +75,7 @@ func (s *Server) handleAbout(w http.ResponseWriter, _ *http.Request) {
 		Version: s.d.Version, GoVersion: runtime.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Started: s.d.Started, UptimeSeconds: time.Since(s.d.Started).Seconds(),
 		Backend: s.d.Backend.Name(), Backends: img.Backends(), Native: map[string]bool{},
+		Codecs: img.RuntimeInfo(s.d.Backend), JPEGRecompression: img.JPEGRecompressAvailable(),
 		Modules: []module{}, StateDir: cfg.Web.StateDirPath(), ProxyAddr: cfg.Listen.Addr,
 		TLS: cfg.Listen.TLS.Cert != "", MITM: cfg.MITM.Enabled(), AuthMode: cfg.Auth.Mode,
 	}
@@ -179,6 +180,9 @@ func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleClearCache(w http.ResponseWriter, _ *http.Request) {
 	s.d.Pipeline.ClearCache()
+	if s.d.Images != nil {
+		s.d.Images.ClearCache()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

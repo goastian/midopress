@@ -66,6 +66,7 @@ func (o *observer) Observe(ob *proxy.Observation) {
 	ev := stats.Event{
 		Time: ob.Time, Kind: out.Kind, Codec: out.Codec, Profile: out.Profile, Reason: out.Reason.String(), Cause: out.Cause,
 		Transformed: out.Reason == pipeline.Transformed, BytesIn: out.BytesIn, BytesOut: out.BytesOut,
+		Failed:   out.Err != nil,
 		Duration: ob.Duration, ClientKey: key, Device: ob.Client.Device, Addr: ob.Client.Addr.String(),
 		UserAgent: ob.UserAgent, CacheHit: out.CacheHit,
 	}
@@ -90,6 +91,9 @@ func (o *observer) Observe(ob *proxy.Observation) {
 		f.Decision = "transformed"
 	} else {
 		f.Codec = ""
+	}
+	if out.Err == nil {
+		f.Saved = out.BytesIn - out.BytesOut
 	}
 	var orig, res *flows.Body
 	if out.Original != nil && out.Result != nil {
@@ -131,7 +135,7 @@ func (s *Server) newAdmin() error {
 	d := admin.Deps{
 		Version: s.version, Started: s.started, Token: token, Pipeline: s.pipe, Proxy: s.proxy,
 		Collector: s.collector, Flows: s.flows, Logs: s.logs, Level: s.level, Registry: s.registry,
-		Backend: s.pipe.Engine().Backend(), Auth: s.auth, CA: s.ca,
+		Backend: s.pipe.Engine().Backend(), Auth: s.auth, CA: s.ca, Images: s.images,
 		Config:    func() *config.Config { return s.current.Load() },
 		Overrides: func() (*config.Overrides, error) { return config.LoadOverrides(s.current.Load().Web.UIPath()) },
 		Save:      s.saveOverrides,

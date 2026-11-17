@@ -22,6 +22,7 @@ type point struct {
 	requests uint64
 	bytesIn  uint64
 	bytesOut uint64
+	saved    int64
 }
 
 // slot returns the point of the interval ep in the ring, reset when it still
@@ -63,8 +64,8 @@ type stripe struct {
 	_           [64]byte
 }
 
-func (s *stripe) record(unix int64, ki, ci, pi, ri, cai int, tr, in, out uint64, lat int) {
-	b := Bucket{1, tr, in, out}
+func (s *stripe) record(unix int64, ki, ci, pi, ri, cai int, tr, in, out uint64, saved int64, lat int) {
+	b := Bucket{Requests: 1, Transformed: tr, BytesIn: in, BytesOut: out, Saved: saved}
 	s.kinds[ki] = s.kinds[ki].plus(b)
 	s.codecs[ci] = s.codecs[ci].plus(b)
 	s.profiles[pi] = s.profiles[pi].plus(b)
@@ -77,11 +78,13 @@ func (s *stripe) record(unix int64, ki, ci, pi, ri, cai int, tr, in, out uint64,
 		p.requests++
 		p.bytesIn += in
 		p.bytesOut += out
+		p.saved += saved
 	}
 	if p := slot(s.minutes[:], unix/60); p != nil {
 		p.requests++
 		p.bytesIn += in
 		p.bytesOut += out
+		p.saved += saved
 	}
 	if lat >= 0 {
 		m := unix / 60
@@ -109,6 +112,7 @@ func addPoints(out []SeriesPoint, ring []point, now int64) {
 		o.Requests += p.requests
 		o.BytesIn += p.bytesIn
 		o.BytesOut += p.bytesOut
+		o.Saved += p.saved
 	}
 }
 

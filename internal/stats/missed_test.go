@@ -21,7 +21,7 @@ func TestByReasonSplitsKindsAndBytes(t *testing.T) {
 	assert.Equal(t, []ReasonStat{
 		{Reason: "type", Kind: "media", Requests: 1, BytesIn: 5000, BytesOut: 5000},
 		{Reason: "no-transform", Kind: "image", Requests: 2, BytesIn: 1000, BytesOut: 1000},
-		{Reason: "transformed", Kind: "image", Requests: 1, BytesIn: 1000, BytesOut: 400},
+		{Reason: "transformed", Kind: "image", Requests: 1, BytesIn: 1000, BytesOut: 400, Saved: 600},
 		{Reason: "no-transform", Kind: "text", Requests: 1, BytesIn: 50, BytesOut: 50},
 	}, s.ByReason)
 	assert.Equal(t, []CauseStat{{Reason: "type", Cause: "application/vnd.yt-ump", Requests: 1, BytesIn: 5000}}, s.ByCause)

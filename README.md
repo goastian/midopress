@@ -422,6 +422,18 @@ To work on the interface, run `npm run dev` in `web/`: Vite serves it on 5173
 with live reload and forwards `/api` to the running MidoPress (`MIDOPRESS_ADMIN`
 changes where).
 
+## Public images without a CA
+
+Enable `image_api.enabled` to serve signed `GET /img` requests on a separate
+listener (loopback port 9997 by default). Use **Images** in the administration
+interface to compare original and optimized public images, inspect bytes, timing,
+cache decisions and codec execution, and return to the original.
+
+The server signs each resource and its transformation parameters; the image
+listener never receives the admin token. HTTPS is required outside local tests.
+Downloads reject internal destinations and session responses, with byte, pixel,
+time and concurrency limits. Conversion runs in a cancellable child process.
+
 ## Docker
 
 ```sh
@@ -476,7 +488,22 @@ cd web
 node scenarios/run.mjs --bin ../bin/midopress --label after      # news, social feed, shop, GitHub, YouTube, HLS
 node scenarios/replay.mjs --bin ../bin/midopress --dir ../artifacts/corpus-images --label images   # the same files, cold and warm
 node scenarios/table.mjs ../artifacts/scenarios/after.json       # the results as Markdown
+node scenarios/popular.mjs --existing --sites youtube,amazon,alibaba,aliexpress,google,facebook,pinterest --out ../artifacts/popular-live
+node scenarios/popular.mjs --bin ../bin/midopress --profiles balanced,saver,extreme,lossless --out ../artifacts/popular
 ```
+
+`popular.mjs --existing` sends public browsing traffic to `127.0.0.1:9999`,
+visible in the administration on `:9998`. The token is read from the local state
+directory. Without `--existing`, each profile uses an isolated proxy and cold/warm
+transformation caches. Browser caches and QUIC are disabled in direct and proxy
+visits. Only the disposable test browser ignores certificate errors; system trust
+is unchanged and the proxy still verifies origin TLS. No accounts are signed in.
+Challenges, login walls, failures and counter resets are recorded separately.
+Savings exclude incomplete responses and are measured against each HTTP body's
+input, rather than differences between changing live pages. LCP is a laboratory
+observation; INP is not measured. `--sites`, `--timeout-ms` and `--max-bytes` bound
+the experiment. `--static-wait-ms 0` compares background static text compression
+without changing the installed service's configuration.
 
 Real sites change from one run to the next: compare two binaries in the same
 hour (the runs alternate them), and use `replay.mjs`, which serves the same bytes

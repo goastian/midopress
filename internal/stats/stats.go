@@ -103,6 +103,10 @@ func (c *Collector) Record(e Event) {
 	}
 	unix := t.Unix()
 	in, out := nonNeg(e.BytesIn), nonNeg(e.BytesOut)
+	var saved int64
+	if !e.Failed {
+		saved = int64(in) - int64(out)
+	}
 	var tr uint64
 	if e.Transformed {
 		tr = 1
@@ -132,11 +136,11 @@ func (c *Collector) Record(e Event) {
 		st = &s.stripes[start&(nStripes-1)]
 		st.mu.Lock()
 	}
-	st.record(unix, ki, ci, pi, ri, cai, tr, in, out, lat)
+	st.record(unix, ki, ci, pi, ri, cai, tr, in, out, saved, lat)
 	st.mu.Unlock()
 
 	if e.Host != "" && c.domainsOn.Load() {
-		ev := domEvent{tr: tr, in: in, out: out, kind: ki}
+		ev := domEvent{tr: tr, in: in, out: out, saved: saved, kind: ki}
 		if !e.Transformed {
 			ev.reason = orDefault(e.Reason, "unknown")
 		}
@@ -148,7 +152,7 @@ func (c *Collector) Record(e Event) {
 		cl, created := s.clients.get(e.ClientKey, ns)
 		cl.touch(ns)
 		cl.setInfo(e.Device, e.Addr, e.UserAgent, e.Profile)
-		cl.kinds[ki].add(tr, in, out)
+		cl.kinds[ki].add(tr, in, out, saved)
 		c.notify(cl, ns, created)
 	}
 }
@@ -252,7 +256,7 @@ func (c *Collector) Snapshot(topDomains int) Snapshot {
 		snap.ByDecision[n] = reasons[i]
 		for ki, b := range reasonKinds[i] {
 			if b.Requests > 0 {
-				snap.ByReason = append(snap.ByReason, ReasonStat{Reason: n, Kind: kindNames[ki], Requests: b.Requests, BytesIn: b.BytesIn, BytesOut: b.BytesOut})
+				snap.ByReason = append(snap.ByReason, ReasonStat{Reason: n, Kind: kindNames[ki], Requests: b.Requests, BytesIn: b.BytesIn, BytesOut: b.BytesOut, Saved: b.Saved})
 			}
 		}
 	}

@@ -51,6 +51,7 @@ type connectionsView struct {
 	TunnelBytesDown    uint64 `json:"tunnel_bytes_down"`
 	TLSHandshakes      uint64 `json:"tls_handshakes"`
 	TLSHandshakeErrors uint64 `json:"tls_handshake_errors"`
+	AutoPassthrough    uint64 `json:"auto_passthrough"`
 	UpstreamErrors     uint64 `json:"upstream_errors"`
 	Denied             uint64 `json:"denied"`
 }
@@ -121,6 +122,8 @@ type profileInfo struct {
 	Builtin           bool                `json:"builtin"`
 	Modified          bool                `json:"modified"`
 	Lossless          bool                `json:"lossless"`
+	Grayscale         bool                `json:"grayscale"`
+	PlaceholderWidth  int                 `json:"placeholder_width"`
 	TargetDSSIM       float64             `json:"target_dssim"`
 	TargetSSIM        float64             `json:"target_ssim"`
 	TargetSSIMULACRA2 float64             `json:"target_ssimulacra2"`
@@ -213,19 +216,21 @@ type module struct {
 }
 
 type about struct {
-	Version       string          `json:"version"`
-	GoVersion     string          `json:"go_version"`
-	OS            string          `json:"os"`
-	Arch          string          `json:"arch"`
-	Started       time.Time       `json:"started"`
-	UptimeSeconds float64         `json:"uptime_seconds"`
-	Backend       string          `json:"backend"`
-	Backends      []string        `json:"backends"`
-	Native        map[string]bool `json:"native"`
-	Modules       []module        `json:"modules"`
-	StateDir      string          `json:"state_dir"`
-	ProxyAddr     string          `json:"proxy_addr"`
-	TLS           bool            `json:"tls"`
-	MITM          bool            `json:"mitm"`
-	AuthMode      string          `json:"auth_mode"`
+	Version           string                      `json:"version"`
+	GoVersion         string                      `json:"go_version"`
+	OS                string                      `json:"os"`
+	Arch              string                      `json:"arch"`
+	Started           time.Time                   `json:"started"`
+	UptimeSeconds     float64                     `json:"uptime_seconds"`
+	Backend           string                      `json:"backend"`
+	Backends          []string                    `json:"backends"`
+	Native            map[string]bool             `json:"native"`
+	Codecs            map[string]img.CodecRuntime `json:"codecs"`
+	JPEGRecompression bool                        `json:"jpeg_recompression"`
+	Modules           []module                    `json:"modules"`
+	StateDir          string                      `json:"state_dir"`
+	ProxyAddr         string                      `json:"proxy_addr"`
+	TLS               bool                        `json:"tls"`
+	MITM              bool                        `json:"mitm"`
+	AuthMode          string                      `json:"auth_mode"`
 }

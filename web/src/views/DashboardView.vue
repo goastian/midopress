@@ -17,7 +17,7 @@ const busy = ref(false)
 const points = computed(() => (range.value === 's' ? stats.value?.series.seconds : stats.value?.series.minutes) ?? [])
 
 function pct(b: Bucket) {
-  return b.bytes_in > 0 ? ((b.bytes_in - b.bytes_out) / b.bytes_in) * 100 : 0
+  return b.bytes_in > 0 ? (b.saved / b.bytes_in) * 100 : 0
 }
 
 function bucketRows(m: Record<string, Bucket> | undefined): DashRow[] {
@@ -119,13 +119,13 @@ const missed = computed<DashRow[]>(() => {
 })
 
 const domains = computed<DashRow[]>(() => {
-  const d = [...(stats.value?.top_domains ?? [])].sort((a, b) => b.bytes_in - b.bytes_out - (a.bytes_in - a.bytes_out))
-  const max = Math.max(1, ...d.map((x) => x.bytes_in - x.bytes_out))
+  const d = [...(stats.value?.top_domains ?? [])].sort((a, b) => b.saved - a.saved)
+  const max = Math.max(1, ...d.map((x) => x.saved))
   return d.slice(0, 15).map((x) => ({
     key: x.domain,
     label: x.domain,
-    cells: [count(x.requests), bytes(x.bytes_in), bytes(x.bytes_out), bytes(x.bytes_in - x.bytes_out)],
-    bar: (x.bytes_in - x.bytes_out) / max,
+    cells: [count(x.requests), bytes(x.bytes_in), bytes(x.bytes_out), bytes(x.saved)],
+    bar: x.saved / max,
     barText: percent(pct(x), 0),
   }))
 })
@@ -142,22 +142,21 @@ function sum(kinds: string[]): Bucket {
   return kinds.reduce<Bucket>(
     (a, n) => {
       const b = k[n]
-      return b ? { requests: a.requests + b.requests, transformed: a.transformed + b.transformed, bytes_in: a.bytes_in + b.bytes_in, bytes_out: a.bytes_out + b.bytes_out } : a
+      return b ? { requests: a.requests + b.requests, transformed: a.transformed + b.transformed, bytes_in: a.bytes_in + b.bytes_in, bytes_out: a.bytes_out + b.bytes_out, saved: a.saved + b.saved } : a
     },
-    { requests: 0, transformed: 0, bytes_in: 0, bytes_out: 0 },
+    { requests: 0, transformed: 0, bytes_in: 0, bytes_out: 0, saved: 0 },
   )
 }
 const comp = computed(() => sum(['image', 'text', 'font']))
-const compSaved = computed(() => comp.value.bytes_in - comp.value.bytes_out)
+const compSaved = computed(() => comp.value.saved)
 const compPercent = computed(() => (comp.value.bytes_in > 0 ? (compSaved.value / comp.value.bytes_in) * 100 : 0))
 const media = computed(() => sum(['media']))
 const otherKind = computed(() => sum(['other']))
-const tunnel = computed(() => (s.value?.connections.tunnel_bytes_down ?? 0) + (s.value?.connections.tunnel_bytes_up ?? 0))
 const everything = computed(() => (t.value?.bytes_in ?? 0) + (s.value?.connections.tunnel_bytes_down ?? 0))
 function share(n: number) {
   return everything.value > 0 ? percent((n / everything.value) * 100, 0) : '-'
 }
-const keptShare = computed(() => (comp.value.bytes_in > 0 ? (comp.value.bytes_out / comp.value.bytes_in) * 100 : 100))
+const keptShare = computed(() => 100 - Math.max(0, Math.min(100, compPercent.value)))
 const transformedShare = computed(() => (t.value && t.value.requests > 0 ? t.value.transformed / t.value.requests : 0))
 const cacheTotal = computed(() => (s.value ? s.value.cache.hits + s.value.cache.misses : 0))
 
@@ -191,7 +190,11 @@ async function setDomains(on: boolean) {
 
     <template v-else>
       <section class="hero" aria-labelledby="hero-line">
-        <p v-if="comp.bytes_in === 0" id="hero-line" class="statement">
+        <p v-if="comp.bytes_in === 0 && everything > 0" id="hero-line" class="statement">
+          <span class="fig"><UiNum :value="everything" :format="bytes" /></span>
+          <span class="of">received by this proxy; no image, text or font savings measured yet.</span>
+        </p>
+        <p v-else-if="comp.bytes_in === 0" id="hero-line" class="statement">
           <span class="fig zero"><UiNum :value="0" :format="bytes" /></span>
           <span class="of">saved on images, text and fonts so far.</span>
         </p>
@@ -209,13 +212,18 @@ async function setDomains(on: boolean) {
             <i class="gain" :style="{ width: 100 - keptShare + '%' }" />
           </div>
           <div class="key mono">
-            <span class="k-sent">sent <b>{{ bytes(comp.bytes_out) }}</b></span>
+            <span class="k-sent">not saved <b>{{ bytes(comp.bytes_in - compSaved) }}</b></span>
             <span v-if="keptShare >= 28 && keptShare <= 70" class="k-gain" :style="{ left: keptShare + '%' }">saved <b>{{ bytes(compSaved) }}</b></span>
             <span v-else class="k-gain end">saved <b>{{ bytes(compSaved) }}</b></span>
           </div>
         </template>
-        <p v-else-if="t.bytes_in === 0 && tunnel === 0" class="empty">
+        <p v-else-if="t.requests === 0 && s.connections.tunnels_total === 0" class="empty">
           Nothing has gone through the proxy yet. Open <RouterLink to="/connect">Connect</RouterLink> and paste the address into a device.
+        </p>
+
+        <p v-if="t.requests === 0 && s.connections.tunnels_total > 0" class="notice" role="status">
+          HTTPS traffic is reaching this proxy as tunnels. No HTTP content has been inspected, so compression, profiles and HTTP throughput stay empty.
+          <template v-if="s.connections.auto_passthrough">The client rejected the proxy certificate and triggered {{ count(s.connections.auto_passthrough) }} automatic TLS bypasses. Check client trust in <RouterLink to="/connect">Connect</RouterLink>.</template>
         </p>
 
         <dl class="classes" aria-label="Where the bytes are">
@@ -229,23 +237,25 @@ async function setDomains(on: boolean) {
           </div>
           <div>
             <dt>Not inspected</dt>
-            <dd class="mono"><b>{{ bytes(tunnel) }}</b> <span class="muted">{{ share(s.connections.tunnel_bytes_down) }} of all bytes, HTTPS tunnels that are never opened</span></dd>
+            <dd class="mono"><b>{{ bytes(s.connections.tunnel_bytes_down) }}</b> <span class="muted">{{ share(s.connections.tunnel_bytes_down) }} of downloaded bytes; {{ bytes(s.connections.tunnel_bytes_up) }} uploaded, HTTPS tunnels that are never opened</span></dd>
           </div>
         </dl>
 
         <p class="tally small muted">
-          <span class="mono">{{ count(t.requests) }}</span> requests,
+          <span class="mono">{{ count(t.requests) }}</span> inspected HTTP requests,
           <span class="mono">{{ count(t.transformed) }}</span> changed ({{ ratio(transformedShare, 0) }}),
           cache hit rate <span class="mono">{{ cacheTotal ? ratio(s.cache.hit_rate, 0) : '-' }}</span>.
           Everything the proxy opened, video and other files included: <span class="mono">{{ bytes(t.saved) }}</span> saved of
           <span class="mono">{{ bytes(t.bytes_in) }}</span> ({{ percent(t.saved_percent, 1) }}), of which
           <span class="mono">{{ bytes(otherKind.bytes_in) }}</span> other files.
+          Savings exclude incomplete responses.
         </p>
       </section>
 
       <section class="sec">
         <div class="sec-head">
           <h2>Throughput</h2>
+          <span class="sub">Inspected HTTP; HTTPS tunnels are counted separately</span>
           <span class="seg" role="group" aria-label="Chart range">
             <button type="button" :aria-pressed="range === 's'" @click="range = 's'">Last 2 min</button>
             <button type="button" :aria-pressed="range === 'min'" @click="range = 'min'">Last 3 h</button>
@@ -258,24 +268,24 @@ async function setDomains(on: boolean) {
         <div class="stack-lg">
           <section class="sec">
             <div class="sec-head"><h2>By kind</h2></div>
-            <DashTable :head="['Kind', 'Req', 'In', 'Out', 'Saved']" :rows="kinds" :hide-cols="[2]" />
+            <DashTable :head="['Kind', 'Req', 'In', 'Out', 'Saved']" :rows="kinds" :hide-cols="[2]" empty="No inspected HTTP responses yet." />
           </section>
           <section class="sec">
             <div class="sec-head"><h2>By codec sent</h2></div>
-            <DashTable :head="['Codec', 'Req', 'In', 'Out', 'Saved']" :rows="codecs" :hide-cols="[2]" />
+            <DashTable :head="['Codec', 'Req', 'In', 'Out', 'Saved']" :rows="codecs" :hide-cols="[2]" empty="No inspected HTTP responses yet." />
           </section>
         </div>
         <div class="stack-lg">
           <section class="sec">
             <div class="sec-head"><h2>By profile</h2></div>
-            <DashTable :head="['Profile', 'Req', 'In', 'Out', 'Saved']" :rows="profiles" :hide-cols="[2]" />
+            <DashTable :head="['Profile', 'Req', 'In', 'Out', 'Saved']" :rows="profiles" :hide-cols="[2]" empty="No inspected HTTP responses yet." />
           </section>
           <section class="sec">
             <div class="sec-head">
               <h2>Left alone</h2>
               <span class="sub">why bytes were not shrunk</span>
             </div>
-            <DashTable :head="['Reason · kind', 'Responses', 'Bytes', 'Share']" :rows="leftAlone" :hide-cols="[1]" empty="Everything the proxy opened was shrunk." />
+            <DashTable :head="['Reason · kind', 'Responses', 'Bytes', 'Share']" :rows="leftAlone" :hide-cols="[1]" :empty="t.requests ? 'Everything the proxy opened was shrunk.' : 'No inspected HTTP responses yet.'" />
           </section>
         </div>
       </div>
@@ -309,6 +319,7 @@ async function setDomains(on: boolean) {
               <dt>Tunnels</dt><dd class="mono">{{ s.connections.tunnels_active }} open, {{ count(s.connections.tunnels_total) }} total</dd>
               <dt>Passed untouched (HTTPS tunnels)</dt><dd class="mono">{{ bytes(s.connections.tunnel_bytes_down) }} down, {{ bytes(s.connections.tunnel_bytes_up) }} up<span class="muted">, not shrunk</span></dd>
               <dt>TLS handshakes</dt><dd class="mono">{{ count(s.connections.tls_handshakes) }}<span :class="s.connections.tls_handshake_errors ? 'bad' : 'muted'">, {{ count(s.connections.tls_handshake_errors) }} failed</span></dd>
+              <dt>Automatic TLS bypasses</dt><dd class="mono">{{ count(s.connections.auto_passthrough ?? 0) }}</dd>
               <dt>Upstream errors</dt><dd class="mono" :class="{ bad: s.connections.upstream_errors > 0 }">{{ count(s.connections.upstream_errors) }}</dd>
               <dt>Denied</dt><dd class="mono" :class="{ bad: s.connections.denied > 0 }">{{ count(s.connections.denied) }}</dd>
               <dt>CPU slots busy</dt><dd class="mono">{{ s.cpu.busy }} of {{ s.cpu.slots }}<span v-if="s.cpu.background_queue" class="muted">, {{ s.cpu.background_queue }} queued</span></dd>

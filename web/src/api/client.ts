@@ -1,7 +1,7 @@
 import type {
   About, ApiError, CAInfo, Client, ConfigView, Device, Flow, FlowCompare, FlowList, LogState,
   MissedByReason, NewDevice, ProfileOverride, Rule, ServerEvent, Settings, StatsSnapshot, TestRequest,
-  TestResult, ValidateResult,
+  TestResult, ValidateResult, ImageAPIInfo, ImageRequest, SignedImage,
 } from './types'
 
 const BASE = '/api/v1'
@@ -95,6 +95,8 @@ export async function blobUrl(path: string): Promise<string> {
 }
 
 export const api = {
+  images: () => get<ImageAPIInfo>('/images'),
+  signImage: (req: ImageRequest) => post<SignedImage>('/images/sign', req),
   about: () => get<About>('/about'),
   stats: () => get<StatsSnapshot>('/stats'),
   missed: (reason: string, limit = 20) => get<MissedByReason>(`/stats/missed?reason=${encodeURIComponent(reason)}&limit=${limit}`),

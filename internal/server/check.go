@@ -16,6 +16,11 @@ import (
 // that problems show up before the server starts. It returns every problem.
 func Check(cfg *config.Config) error {
 	errs := []error{cfg.Validate()}
+	if cfg.ImageAPI.Enabled && cfg.ImageAPI.TLS.Cert != "" {
+		if _, err := tls.LoadX509KeyPair(cfg.ImageAPI.TLS.Cert, cfg.ImageAPI.TLS.Key); err != nil {
+			errs = append(errs, fmt.Errorf("image_api.tls: %w", err))
+		}
+	}
 
 	if cfg.Listen.TLS.Cert != "" {
 		if _, err := tls.LoadX509KeyPair(cfg.Listen.TLS.Cert, cfg.Listen.TLS.Key); err != nil {

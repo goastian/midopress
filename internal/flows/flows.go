@@ -36,6 +36,7 @@ type Flow struct {
 	OutContentType string              `json:"out_content_type"`
 	BytesIn        int64               `json:"bytes_in"`
 	BytesOut       int64               `json:"bytes_out"`
+	Saved          int64               `json:"saved"`
 	Decision       string              `json:"decision"` // transformed or passthrough
 	Reason         string              `json:"reason"`
 	Codec          string              `json:"codec"`

@@ -391,7 +391,9 @@ type Outcome struct {
 	Reason   Reason
 	BytesIn  int64 // body bytes read from the origin
 	BytesOut int64 // body bytes written to the client
-	// Err is set when the upstream body could not be read. If Written is false
+	// Err is set when the upstream body could not be read or the response could
+	// not be written. ErrClientWrite identifies failures writing to the client.
+	// If Written is false
 	// nothing reached the client yet and the caller should answer with an error
 	// status; if Written is true the client response is incomplete and must be
 	// aborted.

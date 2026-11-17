@@ -25,7 +25,7 @@ func TestNativeCodecsUnderGCStress(t *testing.T) {
 	be := NewWASM()
 	var formats []Format
 	for _, f := range []Format{WebP, AVIF, JXL} {
-		if be.Native(f) {
+		if be.Supports(f) && be.Native(f) {
 			formats = append(formats, f)
 		}
 	}

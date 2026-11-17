@@ -16,6 +16,11 @@ import (
 const maxAnimationPixels = 48_000_000
 
 func (e *Engine) optimizeGIF(ctx context.Context, in Input) (*Result, error) {
+	if in.VerifyQuality && in.Profile.AnimatedToStill {
+		p := *in.Profile
+		p.AnimatedToStill = false
+		in.Profile = &p
+	}
 	g, err := stdgif.DecodeAll(bytes.NewReader(in.Raw))
 	if err != nil || len(g.Image) == 0 {
 		return nil, ErrUnsupported
@@ -89,7 +94,47 @@ func (e *Engine) optimizeAnimation(ctx context.Context, in Input, g *stdgif.GIF)
 		if err != nil {
 			return
 		}
+		var measure float64
+		var metric Metric
+		if in.VerifyQuality {
+			decoder, ok := e.be.(AnimationDecoder)
+			if !ok {
+				return
+			}
+			decoded, err := decoder.DecodeAnimation(WebP, data)
+			if err != nil || len(decoded.Frames) != len(anim.Frames) || len(decoded.DelaysMS) != len(anim.DelaysMS) || decoded.LoopCount != anim.LoopCount {
+				return
+			}
+			worst := 1e30
+			for i, frame := range decoded.Frames {
+				if ctx.Err() != nil || decoded.DelaysMS[i] != anim.DelaysMS[i] {
+					return
+				}
+				if lossless {
+					if !samePixels(frame, anim.Frames[i]) {
+						return
+					}
+					continue
+				}
+				metric = in.Metric
+				if metric == "" {
+					metric = e.Metric
+				}
+				sc, err := newScorer(metric, anim.Frames[i], in.Profile, true)
+				if err != nil {
+					return
+				}
+				score, err := sc.eval(frame)
+				if err != nil || score < sc.target {
+					return
+				}
+				if score < worst {
+					worst, measure = score, sc.natural(score)
+				}
+			}
+		}
 		r := &Result{Data: data, Format: WebP, Lossless: lossless, Attempts: 1, Quality: q, Note: "animated webp"}
+		r.Metric, r.Measure = metric, measure
 		if lossless {
 			r.Note += " lossless"
 		}

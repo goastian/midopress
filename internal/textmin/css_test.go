@@ -122,3 +122,12 @@ func TestCSSSignatureDetectsDamage(t *testing.T) {
 	assert.NotEqual(t, base, cssSignature(t, []byte("a{color:red;background:url(x.png);content:\"b\"}"), false))
 	assert.NotEqual(t, base, cssSignature(t, []byte("b{color:red;background:url(x.png);content:\"a\"}"), false))
 }
+
+func TestSafeCSSPreservesObservableCustomPropertyValues(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SkipMinified = false
+	in := ":root { --gradient: linear-gradient(180deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0)); --label: \"a  b\"; }"
+	out := minifyString(t, New(cfg), "text/css", in)
+	assert.Equal(t, in, out)
+	requireSafeEqual(t, kindCSS, []byte(in), []byte(out), false)
+}

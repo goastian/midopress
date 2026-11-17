@@ -174,6 +174,10 @@ async function copyConfig() {
         <dd>
           <span v-for="[name, ok] in native" :key="name" class="codec" :class="{ yes: ok }">{{ name }} {{ ok ? 'yes' : 'no' }}</span>
         </dd>
+        <template v-for="(codec, name) in about.codecs" :key="name">
+          <dt>{{ name }} execution</dt><dd>{{ codec.encoder }} encode / {{ codec.decoder }} decode<span class="hint"> — {{ codec.reason }}</span></dd>
+        </template>
+        <dt>Reversible JPEG → JXL</dt><dd>{{ about.jpeg_recompression ? 'Available through native libjxl' : 'Unavailable in this runtime; original JPEG is preserved' }}</dd>
       </dl>
       <div v-else class="skeleton" role="status" aria-label="Loading"><i /><i /><i /></div>
     </section>

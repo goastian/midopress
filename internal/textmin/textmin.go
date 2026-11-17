@@ -62,6 +62,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 
@@ -300,7 +301,25 @@ func (m *Minifier) run(k kind, out *bytes.Buffer, in []byte, params map[string]s
 		if mode == Safe && cssRisky(in) {
 			return true, nil
 		}
-		return false, (&css.Minifier{}).Minify(m.nested, out, r, params)
+		var before []string
+		inline := params != nil && params["inline"] == "1"
+		if mode == Safe && bytes.Contains(in, []byte("--")) {
+			var valid bool
+			before, valid = customProperties(in, inline)
+			if !valid {
+				return true, nil
+			}
+		}
+		if err := (&css.Minifier{}).Minify(m.nested, out, r, params); err != nil {
+			return false, err
+		}
+		if len(before) > 0 {
+			after, valid := customProperties(out.Bytes(), inline)
+			if !valid || !slices.Equal(before, after) {
+				return true, nil
+			}
+		}
+		return false, nil
 	case kindJS:
 		if err := (&js.Minifier{KeepVarNames: mode == Safe}).Minify(m.nested, out, r, params); err != nil {
 			return false, err

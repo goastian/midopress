@@ -23,6 +23,9 @@ type Input struct {
 	// Fixed forces the quality of the encoder, 1 to 100, and skips the search.
 	// Zero lets the engine find the lowest quality that meets the profile.
 	Fixed int
+	// VerifyQuality checks fixed qualities and all animation frames, with no metric downsampling.
+	VerifyQuality bool
+	OutputFormat  Format
 	// Metric overrides the engine's metric for this image when not empty.
 	Metric Metric
 	// Budget is the CPU time the job may use. Zero means no limit. A format
@@ -49,9 +52,10 @@ type Result struct {
 	Resized  bool
 	// Limited says that a better format was skipped because the time budget
 	// was too short for it. A caller with more time can try again.
-	Limited bool
-	Quality int    // quality of the winning encode, 0 when not applicable
-	Note    string // short description, for logs and benchmarks
+	Limited     bool
+	Quality     int    // quality of the winning encode, 0 when not applicable
+	Note        string // short description, for logs and benchmarks
+	Intentional bool
 }
 
 // Engine recodes images with a Backend.
@@ -104,6 +108,9 @@ func (e *Engine) Backend() Backend { return e.be }
 func (e *Engine) Optimize(ctx context.Context, in Input) (*Result, error) {
 	if in.Profile == nil {
 		in.Profile, _ = Lookup(ProfileBalanced)
+	}
+	if in.Profile.Grayscale || in.Profile.PlaceholderWidth > 0 {
+		return e.optimizeEffects(ctx, in)
 	}
 	switch in.Format {
 	case JPEG:
@@ -214,6 +221,9 @@ const avifMinBytes = 10 << 10
 func (e *Engine) formatsFor(in Input, alpha bool) []Format {
 	var out []Format
 	for _, f := range in.Profile.Formats {
+		if in.OutputFormat != Unknown && f != in.OutputFormat {
+			continue
+		}
 		if !in.Caps.Has(f) || !e.be.Supports(f) {
 			continue
 		}
@@ -224,7 +234,7 @@ func (e *Engine) formatsFor(in Input, alpha bool) []Format {
 	}
 	// JPEG is the last resort for a picture that came from a camera or a
 	// editor; it never beats the modern format a site already chose.
-	if !alpha && !isModern(in.Format) {
+	if !alpha && (!isModern(in.Format) || in.OutputFormat == JPEG) && (in.OutputFormat == Unknown || in.OutputFormat == JPEG) {
 		out = append(out, JPEG)
 	}
 	return out
@@ -245,7 +255,7 @@ func (e *Engine) lossy(ctx context.Context, in Input, src image.Image, orientati
 	if metric == "" {
 		metric = e.Metric
 	}
-	sc, err := newScorer(metric, pic, p)
+	sc, err := newScorer(metric, pic, p, in.VerifyQuality)
 	if err != nil {
 		return base, nil
 	}
@@ -358,7 +368,7 @@ func (e *Engine) search(ctx context.Context, f Format, pic image.Image, sc *scor
 		if e.OnEncode != nil {
 			e.OnEncode(f, pixels, time.Since(t0))
 		}
-		ok := s >= target || in.Fixed > 0
+		ok := s >= target || in.Fixed > 0 && !in.VerifyQuality
 		e.tracef("%s q=%d: %d bytes, %s %.5f (target %.5f), %s", f, q, len(data), sc.metric, sc.natural(s), sc.natural(target), time.Since(start).Round(time.Millisecond))
 		if ok && (best == nil || len(data) < len(best.Data)) {
 			best = &Result{Data: data, Format: f, Measure: sc.natural(s), Metric: sc.metric, Quality: q, Note: f.String()}
@@ -528,6 +538,9 @@ func (e *Engine) losslessModern(ctx context.Context, in Input, src image.Image) 
 	pic, _ := Normalize(src)
 	pixels := pic.Bounds().Dx() * pic.Bounds().Dy()
 	for _, f := range []Format{JXL, WebP} {
+		if in.OutputFormat != Unknown && f != in.OutputFormat {
+			continue
+		}
 		if !in.Caps.Has(f) || !e.be.Supports(f) || ctx.Err() != nil {
 			continue
 		}
@@ -568,7 +581,7 @@ func (e *Engine) quantized(ctx context.Context, in Input, src image.Image) *Resu
 	if metric == "" {
 		metric = e.Metric
 	}
-	sc, err := newScorer(metric, src, in.Profile)
+	sc, err := newScorer(metric, src, in.Profile, in.VerifyQuality)
 	if err != nil {
 		return nil
 	}

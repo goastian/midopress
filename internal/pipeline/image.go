@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -107,7 +108,8 @@ func hintsFrom(h http.Header) img.Hints {
 func imageKey(plain []byte, prof *img.Profile, caps img.Caps, hints img.Hints, fixed int) string {
 	h := sha256.New()
 	h.Write(plain)
-	_, _ = fmt.Fprintf(h, "|%s|%v%v%v|%d|%.2f|%d", prof.Name, caps.WebP, caps.AVIF, caps.JXL, hints.ViewportWidth, hints.DPR, fixed)
+	_, _ = fmt.Fprintf(h, "|image-v2|%v%v%v|%d|%.2f|%d", caps.WebP, caps.AVIF, caps.JXL, hints.ViewportWidth, hints.DPR, fixed)
+	_ = json.NewEncoder(h).Encode(prof)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -375,8 +377,8 @@ func (p *Pipeline) writeRecoded(w http.ResponseWriter, resp *http.Response, srcE
 	h.Set("Content-Type", e.ContentType)
 	h.Set("Content-Length", strconv.Itoa(len(e.Data)))
 	w.WriteHeader(resp.StatusCode)
-	n, _ := w.Write(e.Data)
-	return Outcome{Reason: Transformed, BytesIn: bytesIn, BytesOut: int64(n), Written: true}
+	n, err := writeResponseBody(w, e.Data)
+	return Outcome{Reason: Transformed, BytesIn: bytesIn, BytesOut: int64(n), Written: true, Err: err}
 }
 
 // recode runs the engine for one image. Requests for the same image that

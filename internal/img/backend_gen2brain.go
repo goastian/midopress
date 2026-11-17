@@ -25,8 +25,10 @@ func (*WASM) Name() string { return "wasm" }
 
 func (*WASM) Supports(f Format) bool {
 	switch f {
-	case JPEG, WebP, AVIF, JXL:
+	case JPEG, WebP, AVIF:
 		return true
+	case JXL:
+		return jpegxl.Dynamic() != nil
 	}
 	return false
 }
@@ -80,6 +82,9 @@ func (*WASM) Encode(f Format, m image.Image, o EncodeOptions) ([]byte, error) {
 		}
 		err = avif.Encode(&b, m, avif.Options{Quality: o.Quality, QualityAlpha: o.Quality, Speed: avifSpeed(o.Effort), ChromaSubsampling: sub, Lossless: o.Lossless})
 	case JXL:
+		if jpegxl.Dynamic() == nil {
+			return nil, fmt.Errorf("%w: native JPEG XL pixel encoder has an unsafe output cursor", ErrUnsupported)
+		}
 		err = jpegxl.Encode(&b, m, jpegxl.Options{Quality: o.Quality, Effort: jxlEffort(o.Effort), Lossless: o.Lossless})
 	case JPEG:
 		sub := o.Subsampling
@@ -151,4 +156,19 @@ func (*WASM) Decode(f Format, data []byte) (image.Image, error) {
 		return jpegxl.Decode(r)
 	}
 	return nil, fmt.Errorf("img: can not decode %s", f)
+}
+
+func (*WASM) DecodeAnimation(f Format, data []byte) (*Animation, error) {
+	if f != WebP {
+		return nil, ErrUnsupported
+	}
+	a, err := webp.DecodeAll(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	frames := make([]image.Image, len(a.Image))
+	for i, m := range a.Image {
+		frames[i] = webpToRGBA(m)
+	}
+	return &Animation{Frames: frames, DelaysMS: a.Delay, LoopCount: a.LoopCount}, nil
 }

@@ -9,6 +9,20 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
+func TestAppearanceEffectsRequireExplicitLossyProfiles(t *testing.T) {
+	profiles, err := BuildProfiles(map[string]ProfileOverride{"preview": {Grayscale: ptr(true), PlaceholderWidth: ptr(32)}})
+	require.NoError(t, err)
+	assert.True(t, profiles["preview"].Grayscale)
+	assert.Equal(t, 32, profiles["preview"].PlaceholderWidth)
+	for _, override := range []ProfileOverride{
+		{Base: "lossless", Grayscale: ptr(true)}, {Base: "lossless", PlaceholderWidth: ptr(32)},
+		{PlaceholderWidth: ptr(7)}, {PlaceholderWidth: ptr(129)},
+	} {
+		_, err := BuildProfiles(map[string]ProfileOverride{"bad": override})
+		assert.Error(t, err)
+	}
+}
+
 func TestBuildProfilesWithoutOverrides(t *testing.T) {
 	ps, err := BuildProfiles(nil)
 	require.NoError(t, err)

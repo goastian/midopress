@@ -78,7 +78,7 @@ func (c *client) view(now time.Time, within time.Duration) Client {
 		t = t.plus(b)
 	}
 	v.Requests, v.BytesIn, v.BytesOut = t.Requests, t.BytesIn, t.BytesOut
-	v.Saved = int64(t.BytesIn) - int64(t.BytesOut)
+	v.Saved = t.Saved
 	return v
 }
 

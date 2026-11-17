@@ -49,6 +49,10 @@ type JPEGRecompressor interface {
 	RecompressJPEG(raw []byte) ([]byte, error)
 }
 
+type AnimationDecoder interface {
+	DecodeAnimation(Format, []byte) (*Animation, error)
+}
+
 var (
 	// ErrUnsupported means the image is of a kind that is left alone.
 	ErrUnsupported = errors.New("img: unsupported image")

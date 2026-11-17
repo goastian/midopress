@@ -65,7 +65,10 @@ func optimizeModernInput(t *testing.T, raw []byte, f Format, prof string, caps C
 func TestModernInputsAreRecodedAgainstWhatTheSiteSent(t *testing.T) {
 	webp := encodeModern(t, WebP, 200, 150, 95)
 	avif := encodeModern(t, AVIF, 200, 150, 90)
-	jxl := encodeModern(t, JXL, 200, 150, 95)
+	var jxl []byte
+	if NewWASM().Supports(JXL) {
+		jxl = encodeModern(t, JXL, 200, 150, 95)
+	}
 
 	t.Run("a WebP becomes a smaller picture that meets the target of the profile", func(t *testing.T) {
 		res, err := optimizeModernInput(t, webp, WebP, ProfileSaver, Caps{WebP: true, AVIF: true})
@@ -88,6 +91,9 @@ func TestModernInputsAreRecodedAgainstWhatTheSiteSent(t *testing.T) {
 	})
 
 	t.Run("a JPEG XL that carries an alpha plane is left alone, as the wasm encoder always writes one", func(t *testing.T) {
+		if len(jxl) == 0 {
+			t.Skip("unsafe native JPEG XL pixel encoder is disabled")
+		}
 		_, err := optimizeModernInput(t, jxl, JXL, ProfileExtreme, Caps{WebP: true, AVIF: true, JXL: true})
 		assert.ErrorIs(t, err, ErrUnsupported)
 	})
@@ -107,7 +113,7 @@ func TestModernInputsAreRecodedAgainstWhatTheSiteSent(t *testing.T) {
 	})
 
 	t.Run("a JPEG XL the header of which can not be read to the end is left alone", func(t *testing.T) {
-		_, err := optimizeModernInput(t, jxl[:3], JXL, ProfileExtreme, Caps{JXL: true})
+		_, err := optimizeModernInput(t, []byte{0xff, 0x0a, 0}, JXL, ProfileExtreme, Caps{JXL: true})
 		assert.ErrorIs(t, err, ErrUnsupported)
 		_, err = optimizeModernInput(t, []byte("\xff\x0anothing a header can be read from here"), JXL, ProfileExtreme, Caps{JXL: true})
 		assert.ErrorIs(t, err, ErrUnsupported)

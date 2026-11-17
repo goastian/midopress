@@ -1,6 +1,4 @@
-// Package img recodes images: it picks the smallest representation a client can
-// display that stays visually indistinguishable from the original, and proves it
-// by measuring the result.
+// Package img recodes images using profile-specific fidelity measurements.
 package img
 
 import (

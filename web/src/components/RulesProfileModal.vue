@@ -9,8 +9,8 @@ const props = defineProps<{ profile: ProfileInfo | null; profiles: ProfileInfo[]
 const emit = defineEmits<{ close: []; saved: [cfg: ConfigView] }>()
 
 type NumKey =
-  | 'target_dssim' | 'target_ssim' | 'target_ssimulacra2' | 'attempts' | 'photo_colors' | 'animated_quality' | 'avif_effort'
-type BoolKey = 'resize_to_viewport' | 'quantize_png' | 'animated_to_still' | 'minify_js'
+  | 'target_dssim' | 'target_ssim' | 'target_ssimulacra2' | 'attempts' | 'photo_colors' | 'animated_quality' | 'avif_effort' | 'placeholder_width'
+type BoolKey = 'resize_to_viewport' | 'quantize_png' | 'animated_to_still' | 'minify_js' | 'grayscale'
 type TextKey = 'brotli' | 'gzip' | 'zstd' | 'brotli_static' | 'static_wait_ms'
 
 const isNew = props.profile === null
@@ -30,6 +30,7 @@ const reference = computed<ProfileInfo | undefined>(() => {
 })
 
 const numFields: { key: NumKey; label: string; step: number; hint: string }[] = [
+  { key: 'placeholder_width', label: 'Lo-Fi placeholder width', step: 1, hint: '0 disables; 8 to 128 pixels intentionally removes image detail. Restore the original for full quality.' },
   { key: 'target_dssim', label: 'target_dssim', step: 0.0005, hint: '0.0001 to 1, lower is closer to the original' },
   { key: 'target_ssim', label: 'target_ssim', step: 0.005, hint: '0.5 to 1' },
   { key: 'target_ssimulacra2', label: 'target_ssimulacra2', step: 1, hint: '0 to 100' },
@@ -39,6 +40,7 @@ const numFields: { key: NumKey; label: string; step: number; hint: string }[] = 
   { key: 'avif_effort', label: 'avif_effort', step: 1, hint: '0 lets the engine choose, 1 fastest to 10 smallest AVIF files; WebAssembly never goes above 2' },
 ]
 const boolFields: { key: BoolKey; label: string }[] = [
+  { key: 'grayscale', label: 'Grayscale (intentionally removes colour)' },
   { key: 'resize_to_viewport', label: 'resize_to_viewport' },
   { key: 'quantize_png', label: 'quantize_png' },
   { key: 'animated_to_still', label: 'animated_to_still' },

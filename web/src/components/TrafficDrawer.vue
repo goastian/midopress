@@ -36,7 +36,7 @@ watch(
 
 const f = computed(() => full.value ?? props.flow)
 const url = computed(() => `${f.value.scheme}://${f.value.host}${f.value.path}`)
-const saved = computed(() => (f.value.bytes_in > 0 ? ((f.value.bytes_in - f.value.bytes_out) / f.value.bytes_in) * 100 : 0))
+const saved = computed(() => (f.value.bytes_in > 0 ? (f.value.saved / f.value.bytes_in) * 100 : 0))
 const hasImage = computed(() => f.value.kind === 'image' && (f.value.decision === 'transformed' || f.value.has_original))
 
 function rows(h: Record<string, string[]> | null | undefined) {

@@ -168,7 +168,7 @@ function mime(t: string) {
   return t.split(';')[0].trim()
 }
 function savedPct(f: Flow) {
-  return f.bytes_in > 0 && f.bytes_out < f.bytes_in ? ((f.bytes_in - f.bytes_out) / f.bytes_in) * 100 : 0
+  return f.bytes_in > 0 ? (f.saved / f.bytes_in) * 100 : 0
 }
 function path(f: Flow) {
   return f.path || '/'

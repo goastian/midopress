@@ -269,6 +269,21 @@ web:
   # Serve the Go profiler under /debug/pprof on the administration server.
   pprof: false
 
+image_api:
+  enabled: false
+  addr: 127.0.0.1:9997
+  public_url: http://127.0.0.1:9997
+  tls: {cert: "", key: ""}
+  key_file: ""
+  max_bytes: 8MiB
+  max_pixels: 2000000
+  max_width: 4096
+  max_dpr: 3
+  concurrency: 2
+  timeout: 30s
+  signature_ttl: 5m
+  cache_ttl: 1h
+
 log:
   level: info
   # text or json

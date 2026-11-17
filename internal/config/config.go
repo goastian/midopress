@@ -33,10 +33,27 @@ type Config struct {
 	// Profiles changes the built-in profiles or defines new ones.
 	Profiles map[string]img.ProfileOverride `yaml:"profiles"`
 	// Rules decide what happens to each request, in order, see internal/rules.
-	Rules   []rules.Rule `yaml:"rules"`
-	Metrics Metrics      `yaml:"metrics"`
-	Web     Web          `yaml:"web"`
-	Log     Log          `yaml:"log"`
+	Rules    []rules.Rule `yaml:"rules"`
+	Metrics  Metrics      `yaml:"metrics"`
+	Web      Web          `yaml:"web"`
+	ImageAPI ImageAPI     `yaml:"image_api"`
+	Log      Log          `yaml:"log"`
+}
+
+type ImageAPI struct {
+	Enabled      bool          `yaml:"enabled"`
+	Addr         string        `yaml:"addr"`
+	PublicURL    string        `yaml:"public_url"`
+	TLS          TLS           `yaml:"tls"`
+	KeyFile      string        `yaml:"key_file"`
+	MaxBytes     ByteSize      `yaml:"max_bytes"`
+	MaxPixels    int           `yaml:"max_pixels"`
+	MaxWidth     int           `yaml:"max_width"`
+	MaxDPR       float64       `yaml:"max_dpr"`
+	Concurrency  int           `yaml:"concurrency"`
+	Timeout      time.Duration `yaml:"timeout"`
+	SignatureTTL time.Duration `yaml:"signature_ttl"`
+	CacheTTL     time.Duration `yaml:"cache_ttl"`
 }
 
 // Web configures the administration server and the magic host.
@@ -356,6 +373,9 @@ func Default() *Config {
 			MagicHost:    "midopress.it",
 		},
 		Log: Log{Level: "info", Format: "text"},
+		ImageAPI: ImageAPI{Addr: "127.0.0.1:9997", PublicURL: "http://127.0.0.1:9997",
+			MaxBytes: 8 << 20, MaxPixels: 2_000_000, MaxWidth: 4096, MaxDPR: 3,
+			Concurrency: 2, Timeout: 30 * time.Second, SignatureTTL: 5 * time.Minute, CacheTTL: time.Hour},
 	}
 }
 
@@ -540,6 +560,9 @@ func (c *Config) Validate() error {
 	}
 
 	w := c.Web
+	if err := c.validateImageAPI(); err != nil {
+		add("%v", err)
+	}
 	if w.Enabled && strings.TrimSpace(w.Addr) == "" {
 		add("web.addr must be set when web.enabled is true")
 	}

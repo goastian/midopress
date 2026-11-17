@@ -2,11 +2,30 @@ package pipeline
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 
 	"github.com/goastian/midopress/internal/httpx"
 )
+
+// ErrClientWrite marks an incomplete response caused by writing to the client.
+var ErrClientWrite = errors.New("client response write failed")
+
+func clientWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.Join(ErrClientWrite, err)
+}
+
+func writeResponseBody(w io.Writer, body []byte) (int, error) {
+	n, err := w.Write(body)
+	if err == nil && n < len(body) {
+		err = io.ErrShortWrite
+	}
+	return n, clientWriteError(err)
+}
 
 // errReader remembers the error of the source so that a failure reading from
 // the origin can be told apart from a failure writing to the client.
@@ -26,13 +45,17 @@ func (e *errReader) Read(b []byte) (int, error) {
 }
 
 type countWriter struct {
-	w io.Writer
-	n int64
+	w   io.Writer
+	n   int64
+	err error
 }
 
 func (c *countWriter) Write(b []byte) (int, error) {
-	n, err := c.w.Write(b)
+	n, err := writeResponseBody(c.w, b)
 	c.n += int64(n)
+	if err != nil {
+		c.err = err
+	}
 	return n, err
 }
 
@@ -63,6 +86,7 @@ func (p *Pipeline) passthroughBody(w http.ResponseWriter, resp *http.Response, b
 		return out
 	}
 	if err != nil {
+		out.Err = clientWriteError(err)
 		return out
 	}
 	for k, v := range resp.Trailer {
@@ -102,8 +126,8 @@ func (p *Pipeline) copyFlushing(dst io.Writer, w http.ResponseWriter, src io.Rea
 func (p *Pipeline) writeBuffered(w http.ResponseWriter, resp *http.Response, body []byte, in int64, reason Reason) Outcome {
 	httpx.CopyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	n, _ := w.Write(body)
-	return Outcome{Reason: reason, BytesIn: in, BytesOut: int64(n), Written: true}
+	n, err := writeResponseBody(w, body)
+	return Outcome{Reason: reason, BytesIn: in, BytesOut: int64(n), Written: true, Err: err}
 }
 
 // prefixed returns a reader that replays prefix and then continues with rest.

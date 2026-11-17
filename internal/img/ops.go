@@ -57,6 +57,22 @@ func IsOpaque(m image.Image) bool {
 // pixel size of both representations Normalize returns
 const pixelBytes = 4
 
+func samePixels(a, b image.Image) bool {
+	if a.Bounds().Size() != b.Bounds().Size() {
+		return false
+	}
+	for y := 0; y < a.Bounds().Dy(); y++ {
+		for x := 0; x < a.Bounds().Dx(); x++ {
+			ar, ag, ab, aa := a.At(a.Bounds().Min.X+x, a.Bounds().Min.Y+y).RGBA()
+			br, bg, bb, ba := b.At(b.Bounds().Min.X+x, b.Bounds().Min.Y+y).RGBA()
+			if ar != br || ag != bg || ab != bb || aa != ba {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // Orient applies an EXIF orientation (1..8) to the pixels, so that the result
 // can be saved with no orientation tag and still display upright.
 func Orient(m image.Image, orientation int) image.Image {

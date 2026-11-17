@@ -26,7 +26,7 @@ const step = computed(() => (props.unit === 's' ? 1 : 60))
 const first = computed(() => last.value - (span.value - 1) * step.value)
 
 const yMax = computed(() => {
-  const m = Math.max(0, ...props.points.map((p) => p.bytes_in))
+  const m = Math.max(0, ...props.points.flatMap((p) => [p.bytes_in, p.bytes_out]))
   if (m <= 0) return 1000
   const pow = 10 ** Math.floor(Math.log10(m))
   const n = m / pow
@@ -44,7 +44,7 @@ function line(key: 'bytes_in' | 'bytes_out') {
 const area = computed(() => {
   if (!props.points.length) return ''
   const top = props.points.map((p) => `${x(p.t).toFixed(1)},${y(p.bytes_in).toFixed(1)}`)
-  const bot = props.points.map((p) => `${x(p.t).toFixed(1)},${y(p.bytes_out).toFixed(1)}`).reverse()
+  const bot = props.points.map((p) => `${x(p.t).toFixed(1)},${y(p.bytes_in - Math.max(0, p.saved)).toFixed(1)}`).reverse()
   return `M${top.join('L')}L${bot.join('L')}Z`
 })
 
@@ -141,7 +141,7 @@ const tip = computed(() => {
       <div class="muted">{{ tip.time }}</div>
       <div>from origins {{ bytes(tip.p.bytes_in) }}</div>
       <div>sent {{ bytes(tip.p.bytes_out) }}</div>
-      <div class="ok">saved {{ bytes(tip.p.bytes_in - tip.p.bytes_out) }}</div>
+      <div class="ok">saved {{ bytes(tip.p.saved) }}</div>
       <div class="muted">{{ tip.p.requests }} req</div>
     </div>
   </div>

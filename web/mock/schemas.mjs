@@ -45,8 +45,8 @@ export function check(v, s, at = '$') {
   return [`${at}: bad schema`]
 }
 
-const Bucket = obj({ requests: num, transformed: num, bytes_in: num, bytes_out: num })
-const SeriesPoint = obj({ t: num, requests: num, bytes_in: num, bytes_out: num })
+const Bucket = obj({ requests: num, transformed: num, bytes_in: num, bytes_out: num, saved: num })
+const SeriesPoint = obj({ t: num, requests: num, bytes_in: num, bytes_out: num, saved: num })
 const Kind = lit('image', 'text', 'font', 'media', 'other')
 const Strs = arr(str)
 const Headers = or(nul, rec(Strs))
@@ -55,15 +55,15 @@ export const StatsSnapshot = obj({
   time: str, uptime_seconds: num, version: str,
   totals: obj({ requests: num, transformed: num, bytes_in: num, bytes_out: num, saved: num, saved_percent: num }),
   by_kind: rec(Bucket), by_codec: rec(Bucket), by_profile: rec(Bucket), by_decision: rec(num),
-  by_reason: arr(obj({ reason: str, kind: str, requests: num, bytes_in: num, bytes_out: num })),
+  by_reason: arr(obj({ reason: str, kind: str, requests: num, bytes_in: num, bytes_out: num, saved: num })),
   by_cause: arr(obj({ reason: str, cause: str, requests: num, bytes_in: num })),
   latency: obj({ p50_ms: num, p95_ms: num, p99_ms: num, samples: num }),
   cache: obj({ hits: num, misses: num, hit_rate: num, memory_bytes: num, memory_items: num, disk_bytes: num, disk_items: num, evictions: num, expired: num, disk_errors: num }),
   connections: obj({ clients_active: num, requests_in_flight: num, tunnels_active: num, tunnels_total: num, tunnel_bytes_up: num, tunnel_bytes_down: num, tls_handshakes: num, tls_handshake_errors: num, upstream_errors: num, denied: num }),
   cpu: obj({ slots: num, busy: num, background_queue: num }),
-  top_domains: or(nul, arr(obj({ domain: str, requests: num, transformed: num, bytes_in: num, bytes_out: num }))),
+  top_domains: or(nul, arr(obj({ domain: str, requests: num, transformed: num, bytes_in: num, bytes_out: num, saved: num }))),
   top_missed: or(nul, arr(obj({
-    domain: str, requests: num, transformed: num, bytes_in: num, bytes_out: num, missed_bytes: num, media_bytes: num,
+    domain: str, requests: num, transformed: num, bytes_in: num, bytes_out: num, saved: num, missed_bytes: num, media_bytes: num,
     reasons: arr(obj({ reason: str, kind: str, requests: num, bytes_in: num })),
   }))),
   series: obj({ seconds: arr(SeriesPoint), minutes: arr(SeriesPoint) }),
@@ -77,7 +77,7 @@ export const MissedByReason = obj({
 export const Flow = obj({
   id: str, time: str, method: str, scheme: str, host: str, path: str, status: num,
   client: obj({ device: str, addr: str }), kind: Kind, content_type: str, out_content_type: str,
-  bytes_in: num, bytes_out: num, decision: lit('transformed', 'passthrough'), reason: str, codec: str, profile: str,
+  bytes_in: num, bytes_out: num, saved: num, decision: lit('transformed', 'passthrough'), reason: str, codec: str, profile: str,
   duration_ms: num, cache_hit: bool, metric: str, measure: num, has_original: bool, has_result: bool,
   request_headers: Headers, response_headers: Headers,
 })

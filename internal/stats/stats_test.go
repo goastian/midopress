@@ -81,7 +81,7 @@ func TestConcurrentExactness(t *testing.T) {
 			if e.Transformed {
 				tr = 1
 			}
-			b := Bucket{1, tr, uint64(e.BytesIn), uint64(e.BytesOut)}
+			b := Bucket{1, tr, uint64(e.BytesIn), uint64(e.BytesOut), e.BytesIn - e.BytesOut}
 			k := e.Kind
 			if k != "image" && k != "text" && k != "font" {
 				k = "other"
@@ -299,7 +299,7 @@ func TestDomainOrdering(t *testing.T) {
 	top := *c.Snapshot(3).TopDomains
 	require.Len(t, top, 3)
 	assert.Equal(t, []string{"c", "b", "a"}, []string{top[0].Domain, top[1].Domain, top[2].Domain})
-	assert.Equal(t, Bucket{2, 0, 110, 60}, top[1].Bucket)
+	assert.Equal(t, Bucket{2, 0, 110, 60, 50}, top[1].Bucket)
 	assert.Empty(t, *c.Snapshot(0).TopDomains)
 }
 
@@ -359,8 +359,8 @@ func TestClientsData(t *testing.T) {
 	assert.Equal(t, "saver", cl.Profile)
 	assert.Equal(t, uint64(2), cl.Requests)
 	assert.Equal(t, int64(60), cl.Saved)
-	assert.Equal(t, Bucket{1, 1, 100, 40}, cl.ByKind["image"])
-	assert.Equal(t, Bucket{1, 0, 10, 10}, cl.ByKind["text"])
+	assert.Equal(t, Bucket{1, 1, 100, 40, 60}, cl.ByKind["image"])
+	assert.Equal(t, Bucket{1, 0, 10, 10, 0}, cl.ByKind["text"])
 	assert.True(t, cl.Active)
 	assert.True(t, cl.FirstSeen.Equal(epoch))
 
@@ -582,17 +582,17 @@ func TestSnapshotGolden(t *testing.T) {
 	now := ck.Now().Unix()
 	min := now / 60 * 60
 	want := fmt.Sprintf(`{"totals":{"requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400,"saved":600,"saved_percent":60},`+
-		`"by_kind":{"image":{"requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400}},`+
-		`"by_codec":{"webp":{"requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400}},`+
-		`"by_profile":{"balanced":{"requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400}},`+
+		`"by_kind":{"image":{"requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400,"saved":600}},`+
+		`"by_codec":{"webp":{"requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400,"saved":600}},`+
+		`"by_profile":{"balanced":{"requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400,"saved":600}},`+
 		`"by_decision":{"transformed":1},`+
-		`"by_reason":[{"reason":"transformed","kind":"image","requests":1,"bytes_in":1000,"bytes_out":400}],`+
+		`"by_reason":[{"reason":"transformed","kind":"image","requests":1,"bytes_in":1000,"bytes_out":400,"saved":600}],`+
 		`"by_cause":[],`+
 		`"latency":{"p50_ms":%v,"p95_ms":%v,"p99_ms":%v,"samples":1},`+
-		`"top_domains":[{"domain":"a.test","requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400}],`+
+		`"top_domains":[{"domain":"a.test","requests":1,"transformed":1,"bytes_in":1000,"bytes_out":400,"saved":600}],`+
 		`"top_missed":[],`+
-		`"series":{"seconds":[{"t":%d,"requests":0,"bytes_in":0,"bytes_out":0},{"t":%d,"requests":1,"bytes_in":1000,"bytes_out":400}],`+
-		`"minutes":[{"t":%d,"requests":0,"bytes_in":0,"bytes_out":0},{"t":%d,"requests":1,"bytes_in":1000,"bytes_out":400}]}}`,
+		`"series":{"seconds":[{"t":%d,"requests":0,"bytes_in":0,"bytes_out":0,"saved":0},{"t":%d,"requests":1,"bytes_in":1000,"bytes_out":400,"saved":600}],`+
+		`"minutes":[{"t":%d,"requests":0,"bytes_in":0,"bytes_out":0,"saved":0},{"t":%d,"requests":1,"bytes_in":1000,"bytes_out":400,"saved":600}]}}`,
 		s.Latency.P50Ms, s.Latency.P95Ms, s.Latency.P99Ms, now-1, now, min-60, min)
 	assert.JSONEq(t, want, string(b))
 	assert.InDelta(t, 10.0, s.Latency.P50Ms, 1.2)
@@ -610,7 +610,7 @@ func TestClientJSON(t *testing.T) {
 	cl, _ := c.Client("k")
 	b, err := json.Marshal(cl)
 	require.NoError(t, err)
-	assert.Contains(t, string(b), `"by_kind":{"font":{"requests":1,"transformed":0,"bytes_in":5,"bytes_out":1}}`)
+	assert.Contains(t, string(b), `"by_kind":{"font":{"requests":1,"transformed":0,"bytes_in":5,"bytes_out":1,"saved":4}}`)
 	assert.Contains(t, string(b), `"first_seen":"20`)
 }
 

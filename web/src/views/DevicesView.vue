@@ -77,8 +77,8 @@ function shortUA(ua: string): string {
   }
   return ua.length > 36 ? ua.slice(0, 35) + '...' : ua
 }
-function savedPct(b: { bytes_in: number; bytes_out: number }) {
-  return b.bytes_in > 0 ? ((b.bytes_in - b.bytes_out) / b.bytes_in) * 100 : null
+function savedPct(b: { bytes_in: number; saved: number }) {
+  return b.bytes_in > 0 ? (b.saved / b.bytes_in) * 100 : null
 }
 function kinds(c: Client): [string, Bucket][] {
   return Object.entries(c.by_kind ?? {}).sort((a, b) => b[1].bytes_in - a[1].bytes_in)

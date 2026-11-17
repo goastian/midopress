@@ -9,6 +9,7 @@ import (
 // its boxes without decoding it.
 type AVIF struct {
 	Width, Height int
+	invalidSize   bool
 	// Animated is an image sequence ("avis"), which is not a still.
 	Animated bool
 	// Depth is the bits per channel, 8 when the file does not say.
@@ -107,7 +108,7 @@ func ParseAVIF(raw []byte) (*AVIF, error) {
 			}
 		}
 	}
-	if !gotFtyp || !gotSize {
+	if !gotFtyp || !gotSize || a.invalidSize {
 		return nil, errBadAVIF
 	}
 	return a, nil
@@ -123,9 +124,13 @@ func (a *AVIF) properties(ipco []byte) bool {
 		switch p.typ {
 		case "ispe":
 			if len(p.body) >= 12 {
+				if binary.BigEndian.Uint32(p.body[4:]) > 1<<24 || binary.BigEndian.Uint32(p.body[8:]) > 1<<24 {
+					a.invalidSize = true
+					continue
+				}
 				w := int(binary.BigEndian.Uint32(p.body[4:]))
 				h := int(binary.BigEndian.Uint32(p.body[8:]))
-				if w > 0 && h > 0 && w*h > a.Width*a.Height {
+				if w > 0 && h > 0 && int64(w)*int64(h) > int64(a.Width)*int64(a.Height) {
 					a.Width, a.Height = w, h
 				}
 				found = true

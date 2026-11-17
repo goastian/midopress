@@ -2,11 +2,11 @@ package img
 
 import "fmt"
 
-// Profile says how far an image may be pushed. Every profile keeps the image
-// visually the same to a person looking at it; what changes is how strict the
-// measurement is, and which tricks are allowed.
+// Profile controls measured fidelity and explicitly requested appearance changes.
 type Profile struct {
-	Name string
+	Name             string
+	Grayscale        bool
+	PlaceholderWidth int
 
 	// Lossless allows only bit-exact work: stripping metadata, optimizing PNG,
 	// lossless recoding. Nothing else is touched.

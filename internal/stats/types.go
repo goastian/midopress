@@ -20,6 +20,9 @@ type Event struct {
 	Transformed bool
 	BytesIn     int64
 	BytesOut    int64
+	// Failed means the response body was not delivered completely. Its actual
+	// byte counts remain visible, but it contributes no savings.
+	Failed bool
 	// Duration is the time the pipeline took; zero means not measured and the
 	// event does not enter the latency quantiles.
 	Duration time.Duration
@@ -40,12 +43,13 @@ type Bucket struct {
 	Transformed uint64 `json:"transformed"`
 	BytesIn     uint64 `json:"bytes_in"`
 	BytesOut    uint64 `json:"bytes_out"`
+	// Saved excludes incomplete responses; BytesIn and BytesOut still include them.
+	Saved int64 `json:"saved"`
 }
 
 // Totals is a Bucket with the savings.
 type Totals struct {
 	Bucket
-	Saved        int64   `json:"saved"`
 	SavedPercent float64 `json:"saved_percent"`
 }
 
@@ -71,6 +75,7 @@ type ReasonStat struct {
 	Requests uint64 `json:"requests"`
 	BytesIn  uint64 `json:"bytes_in"`
 	BytesOut uint64 `json:"bytes_out"`
+	Saved    int64  `json:"saved"`
 }
 
 // CauseStat is what happened for one reason and one cause of it.
@@ -117,6 +122,7 @@ type SeriesPoint struct {
 	Requests uint64 `json:"requests"`
 	BytesIn  uint64 `json:"bytes_in"`
 	BytesOut uint64 `json:"bytes_out"`
+	Saved    int64  `json:"saved"`
 }
 
 // Series holds the last 120 seconds and the last 180 minutes, oldest first.
@@ -175,7 +181,7 @@ type Snapshot struct {
 }
 
 func newTotals(b Bucket) Totals {
-	t := Totals{Bucket: b, Saved: int64(b.BytesIn) - int64(b.BytesOut)}
+	t := Totals{Bucket: b}
 	if b.BytesIn > 0 {
 		t.SavedPercent = float64(t.Saved) / float64(b.BytesIn) * 100
 	}

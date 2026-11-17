@@ -156,10 +156,12 @@ func TestRecompressRejects(t *testing.T) {
 		assert.NotEqual(t, base, back)
 	}
 
-	pixels, err := be.Encode(JXL, photoLike(32, 32, 1), EncodeOptions{Quality: 80})
-	require.NoError(t, err)
-	_, err = ReconstructJPEG(pixels)
-	require.Error(t, err, "a pixel jxl has no jpeg to rebuild")
+	if be.Supports(JXL) {
+		pixels, err := be.Encode(JXL, photoLike(32, 32, 1), EncodeOptions{Quality: 80})
+		require.NoError(t, err)
+		_, err = ReconstructJPEG(pixels)
+		require.Error(t, err, "a pixel jxl has no jpeg to rebuild")
+	}
 }
 
 func TestRecompressUnavailable(t *testing.T) {

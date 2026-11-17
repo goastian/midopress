@@ -4,6 +4,7 @@ import { getToken } from '../api/client'
 export const routes = [
   { path: '/', name: 'overview', component: () => import('../views/DashboardView.vue'), meta: { title: 'Overview', nav: true } },
   { path: '/traffic', name: 'traffic', component: () => import('../views/TrafficView.vue'), meta: { title: 'Traffic', nav: true } },
+  { path: '/images', name: 'images', component: () => import('../views/ImagesView.vue'), meta: { title: 'Images', nav: true } },
   { path: '/devices', name: 'devices', component: () => import('../views/DevicesView.vue'), meta: { title: 'Devices', nav: true } },
   { path: '/rules', name: 'policy', component: () => import('../views/RulesView.vue'), meta: { title: 'Policy', nav: true } },
   { path: '/connect', name: 'connect', component: () => import('../views/ConnectView.vue'), meta: { title: 'Connect', nav: true } },

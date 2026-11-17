@@ -61,6 +61,7 @@ export async function startServer(bin, { profile = 'balanced', env = {}, args = 
     proxyURL: `http://127.0.0.1:${proxy}`,
     stats: () => get('/stats'),
     about: () => get('/about'),
+    config: () => get('/config'),
     missed: (reason, limit = 50) => get(`/stats/missed?reason=${encodeURIComponent(reason)}&limit=${limit}`),
     metrics: async () => (await fetch(`http://127.0.0.1:${proxy}/metrics`)).text(),
     stderr: () => stderr,

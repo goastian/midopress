@@ -18,7 +18,9 @@ const child = spawn(
   ['-host', PROXY, '-ca', join(dir, 'ca.crt'), '-cakey', join(dir, 'ca.key')],
   {
     stdio: 'inherit',
-    env: { ...process.env, MIDOPRESS_WEB_ADDR: '127.0.0.1:29998', MIDOPRESS_WEB_STATE_DIR: dir },
+    env: { ...process.env, MIDOPRESS_WEB_ADDR: '127.0.0.1:29998', MIDOPRESS_WEB_STATE_DIR: dir,
+      MIDOPRESS_IMAGE_API_ENABLED: 'true', MIDOPRESS_IMAGE_API_ADDR: '127.0.0.1:29997',
+      MIDOPRESS_IMAGE_API_PUBLIC_URL: 'http://127.0.0.1:29997' },
   },
 )
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill('SIGTERM'))

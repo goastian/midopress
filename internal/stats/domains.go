@@ -36,6 +36,7 @@ type domainSet struct {
 // domEvent is what a set needs to know about one response.
 type domEvent struct {
 	tr, in, out uint64
+	saved       int64
 	kind        int
 	reason      string // why it was left alone, empty when it was transformed
 }
@@ -136,8 +137,8 @@ func (d *domainSet) add(host string, ev domEvent) {
 	s := &d.shards[maphash.String(d.seed, host)&d.mask]
 	var w uint64
 	switch {
-	case !d.missed && ev.in > ev.out:
-		w = ev.in - ev.out
+	case !d.missed && ev.saved > 0:
+		w = uint64(ev.saved)
 	case d.missed && ev.reason != "" && compressible(ev.kind):
 		w = ev.in
 	}
@@ -146,7 +147,7 @@ func (d *domainSet) add(host string, ev domEvent) {
 	if !s.enabled {
 		return
 	}
-	nb := Bucket{1, ev.tr, ev.in, ev.out}
+	nb := Bucket{Requests: 1, Transformed: ev.tr, BytesIn: ev.in, BytesOut: ev.out, Saved: ev.saved}
 	if e, ok := s.m[host]; ok {
 		e.score += w
 		e.b = e.b.plus(nb)
@@ -224,7 +225,7 @@ func (s *domShard) down(i int) {
 }
 
 func betterDomain(a, b DomainStat) bool {
-	sa, sb := int64(a.BytesIn)-int64(a.BytesOut), int64(b.BytesIn)-int64(b.BytesOut)
+	sa, sb := a.Saved, b.Saved
 	if sa != sb {
 		return sa > sb
 	}
