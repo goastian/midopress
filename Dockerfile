@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-slim AS web
+FROM node:22.23.5-slim AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.27-trixie AS build
+FROM golang:1.27.4-trixie AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

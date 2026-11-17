@@ -19,7 +19,7 @@ jobs:
           go-version-file: go.mod
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .node-version
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
