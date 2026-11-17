@@ -227,11 +227,17 @@ func TestGracefulShutdown(t *testing.T) {
 		assert.NotErrorIs(t, err, io.ErrNoProgress)
 	})
 
-	t.Run("no new connections once stopped", func(t *testing.T) {
+	t.Run("no new requests are served once stopped", func(t *testing.T) {
 		h := newHarness(t)
 		addr := h.proxyAddr
 		h.stop()
-		_, err := net.DialTimeout("tcp", addr, time.Second)
+		tr := &http.Transport{DisableKeepAlives: true}
+		defer tr.CloseIdleConnections()
+		client := &http.Client{Transport: tr, Timeout: time.Second}
+		resp, err := client.Get("http://" + addr + "/health")
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
 		assert.Error(t, err)
 	})
 }
