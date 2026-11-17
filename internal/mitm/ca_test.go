@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -86,8 +87,14 @@ func opensslCA(t *testing.T, args ...string) (certPath, keyPath string) {
 	}
 	dir := t.TempDir()
 	certPath, keyPath = filepath.Join(dir, "c.pem"), filepath.Join(dir, "k.pem")
-	full := append([]string{"req", "-x509", "-nodes", "-days", "2", "-subj", "/CN=openssl test",
-		"-keyout", keyPath, "-out", certPath}, args...)
+	full := []string{"req", "-x509", "-nodes", "-days", "2", "-subj", "/CN=openssl test",
+		"-keyout", keyPath, "-out", certPath}
+	if !slices.Contains(args, "-config") {
+		configPath := filepath.Join(dir, "openssl.cnf")
+		require.NoError(t, os.WriteFile(configPath, []byte("[req]\ndistinguished_name=dn\nprompt=no\n[dn]\nCN=openssl test\n"), 0o600))
+		full = append(full, "-config", configPath)
+	}
+	full = append(full, args...)
 	out, err := exec.Command(bin, full...).CombinedOutput()
 	require.NoError(t, err, string(out))
 	return certPath, keyPath

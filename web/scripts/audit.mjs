@@ -15,7 +15,7 @@ export function blockingVulnerabilities(report, policy, lock, now = new Date()) 
     if (!allowed || !vulnerability?.via?.length || seen.has(name)) return false
     const next = new Set([...seen, name])
     const fix = vulnerability.fixAvailable
-    const removalOnly = fix && Object.entries(policy.removalSuggestion).every(([key, value]) => fix[key] === value)
+    const removalOnly = fix && typeof fix === 'object' && fix.name !== policy.package && fix.isSemVerMajor === true
     return vulnerability.via.every(via => typeof via === 'string'
       ? excepted(via, next)
       : name === policy.package && via.name === policy.package && via.url === policy.advisory &&

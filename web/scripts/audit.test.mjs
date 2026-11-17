@@ -16,9 +16,14 @@ const report = () => ({
 
 test('only the approved build-only advisory and its dependants are excepted', () => {
   assert.deepEqual(blockingVulnerabilities(report(), policy, lock, now), [])
-  const removal = report()
-  removal.vulnerabilities.picomatch.fixAvailable = policy.removalSuggestion
-  assert.deepEqual(blockingVulnerabilities(removal, policy, lock, now), [])
+  for (const fix of [
+    { name: 'vue-router', version: '4.6.5', isSemVerMajor: true },
+    { name: 'vite', version: '6.2.7', isSemVerMajor: true },
+  ]) {
+    const removal = report()
+    removal.vulnerabilities.picomatch.fixAvailable = fix
+    assert.deepEqual(blockingVulnerabilities(removal, policy, lock, now), [])
+  }
   const changed = report()
   changed.vulnerabilities.picomatch.via.push({ name: 'picomatch', url: 'https://github.com/advisories/another' })
   assert.deepEqual(blockingVulnerabilities(changed, policy, lock, now), ['picomatch', 'vite'])
@@ -30,6 +35,7 @@ test('approval, expiry, version changes and available fixes remain blocking', ()
     [policy, lock, new Date(policy.expires), report()],
     [policy, { packages: { 'node_modules/picomatch': { version: '4.0.8' } } }, now, report()],
     [policy, lock, now, { ...report(), vulnerabilities: { picomatch: { ...report().vulnerabilities.picomatch, fixAvailable: true } } }],
+    [policy, lock, now, { ...report(), vulnerabilities: { picomatch: { ...report().vulnerabilities.picomatch, fixAvailable: { name: 'picomatch', version: '4.0.8', isSemVerMajor: false } } } }],
   ]) {
     assert.ok(blockingVulnerabilities(data, p, l, date).includes('picomatch'))
   }
