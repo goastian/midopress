@@ -22,6 +22,7 @@ import (
 	"github.com/goastian/midopress/internal/httpx"
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/pipeline"
+	"github.com/goastian/midopress/internal/quota"
 	"github.com/goastian/midopress/internal/upstream"
 )
 
@@ -31,6 +32,7 @@ var ErrLoop = errors.New("proxy: request would loop back to the proxy")
 // Options configures a Proxy.
 type Options struct {
 	Auth     *auth.Authenticator
+	Quotas   *quota.Ledger
 	Upstream *upstream.Client
 	Pipeline *pipeline.Pipeline
 
@@ -151,7 +153,11 @@ func (p *Proxy) ConnContext(ctx context.Context, c net.Conn) context.Context {
 			if ap, err := netip.ParseAddrPort(c.RemoteAddr().String()); err == nil {
 				cl.Addr = ap.Addr()
 			}
-			return pipeline.WithClient(ctx, cl)
+			ctx = pipeline.WithClient(ctx, cl)
+			if hc.metered {
+				ctx = meteredContext(ctx)
+			}
+			return ctx
 		}
 	}
 	return ctx
@@ -282,6 +288,14 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 // serveMITM handles a request that arrived through an intercepted tunnel. The
 // client was authenticated when it opened the tunnel.
 func (p *Proxy) serveMITM(w http.ResponseWriter, r *http.Request) {
+	cl := pipeline.ClientFrom(r.Context())
+	if !p.opts.Auth.DeviceAllowed(cl.Device) {
+		p.denied.Add(1)
+		p.writeError(w, http.StatusForbidden)
+		return
+	}
+	cl.Profile = p.opts.Auth.DeviceProfile(cl.Device)
+	r = r.WithContext(pipeline.WithClient(r.Context(), cl))
 	if r.Host == "" {
 		http.Error(w, "missing Host header", http.StatusBadRequest)
 		return
@@ -301,6 +315,13 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 		p.opts.Magic.ServeHTTP(w, r)
 		return
 	}
+	lease, allowed := p.admit(w, r, false)
+	if !allowed {
+		return
+	}
+	if lease != nil {
+		defer lease.Close()
+	}
 	p.requests.Add(1)
 	p.inflight.Add(1)
 	defer p.inflight.Add(-1)
@@ -309,16 +330,22 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 		defer p.opts.Observer.Begin(cl)()
 	}
 
+	if lease != nil && !transportMetered(r.Context()) && r.Body != nil {
+		r.Body = &quotaReader{ReadCloser: r.Body, lease: lease}
+	}
 	if httpx.IsUpgrade(r.Header) {
-		p.upgrade(w, r)
+		p.upgrade(w, r, lease)
 		return
+	}
+	if lease != nil && !transportMetered(r.Context()) {
+		w = &quotaWriter{ResponseWriter: w, lease: lease}
 	}
 	httpx.RemoveHopByHop(r.Header)
 	r.RequestURI = ""
 
 	resp, err := p.opts.Upstream.RoundTrip(r)
 	if err != nil {
-		p.upstreamError(w, r, err)
+		p.upstreamError(w, r, requestQuotaError(r, err))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -352,6 +379,20 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) upstreamError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, quota.ErrBytes) || errors.Is(err, quota.ErrUnavailable) {
+		if q, ok := w.(*quotaWriter); ok {
+			w = q.Unwrap()
+		}
+		p.denied.Add(1)
+		status, code := http.StatusTooManyRequests, "bytes"
+		if errors.Is(err, quota.ErrUnavailable) {
+			status, code = http.StatusServiceUnavailable, "unavailable"
+		}
+		w.Header().Set("X-MidoPress-Quota", code)
+		w.Header().Set("Retry-After", "1")
+		p.writeError(w, status)
+		return
+	}
 	p.upstreamErrs.Add(1)
 	status := http.StatusBadGateway
 	kind := "upstream"

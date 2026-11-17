@@ -3,9 +3,6 @@ package pipeline
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -106,14 +103,6 @@ func hintsFrom(h http.Header) img.Hints {
 	return hints
 }
 
-func imageKey(plain []byte, prof *img.Profile, caps img.Caps, hints img.Hints, fixed int) string {
-	h := sha256.New()
-	h.Write(plain)
-	_, _ = fmt.Fprintf(h, "|image-v3-sandbox|%v%v%v|%d|%.2f|%d", caps.WebP, caps.AVIF, caps.JXL, hints.ViewportWidth, hints.DPR, fixed)
-	_ = json.NewEncoder(h).Encode(prof)
-	return hex.EncodeToString(h.Sum(nil))
-}
-
 // imageDetail is what handleImage tells its caller about the response.
 type imageDetail struct {
 	entry *xcache.Entry
@@ -130,7 +119,7 @@ func (p *Pipeline) handleImage(w http.ResponseWriter, req *http.Request, resp *h
 		out.Codec = strings.TrimPrefix(d.entry.ContentType, "image/")
 		out.CacheHit = d.hit
 		out.Metric, out.Measure = d.entry.Metric, d.entry.Measure
-		if p.capture.Load() {
+		if p.capture.Load() && !fl.private {
 			out.Original, out.Result = d.plain, d.entry.Data
 		}
 	}
@@ -228,7 +217,7 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 	var hints img.Hints
 	if prof.ResizeToViewport {
 		hints = hintsFrom(req.Header)
-		if hints.ViewportWidth == 0 && p.cfg.Image.PageHints {
+		if hints.ViewportWidth == 0 && p.cfg.Image.PageHints && !fl.private {
 			// no screen size from the client: use how wide the page showed it
 			if w := p.pages.width(requestURL(req)); w > 0 {
 				hints = img.Hints{ViewportWidth: (w + 49) / 50 * 50, DPR: p.dprGuess()}
@@ -236,12 +225,21 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 		}
 	}
 	fixed := p.quality(req.Header, fl)
-	key := imageKey(plain, prof, caps, hints, fixed)
+	key := p.imageCacheKey(plain, prof, caps, hints, fixed)
 	input := img.Input{Raw: plain, Format: kind, Caps: caps, Profile: prof, Hints: hints, Fixed: fixed, Budget: ic.Timeout, VerifyQuality: true}
+	background := func(weight int64) {
+		if !fl.private {
+			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
+		}
+	}
 
 	// What is already done needs no memory for the picture: the cache is asked
 	// before the pixels are counted.
-	entry, ok := p.cache.Get(key)
+	var entry *xcache.Entry
+	ok = false
+	if !fl.private {
+		entry, ok = p.cache.Get(key)
+	}
 	d.hit, d.plain = ok, plain
 	if !ok {
 		var width, height int
@@ -262,36 +260,43 @@ func (p *Pipeline) imageFlow(w http.ResponseWriter, req *http.Request, resp *htt
 		weight := pixelWeight(int64(width)*int64(height), caps, prof)
 		if !mem.grow(ctx, mem.n+weight) {
 			// not lost, only late: the next request finds it done
-			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
+			background(weight)
 			return withCause(p.writeBuffered(w, resp, wire, in.n, PassBusy), CauseMemoryPixels)
 		}
 
-		res, err := p.recode(ctx, key, input)
+		var res *img.Result
+		if fl.private {
+			res, err = p.runCPU(input)
+		} else {
+			res, err = p.recode(ctx, key, input)
+		}
 		switch {
 		case errors.Is(err, errBusy):
 			// no CPU slot in time: the original goes now, and the next request
 			// finds the result
-			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
+			background(weight)
 			return withCause(p.writeBuffered(w, resp, wire, in.n, PassBusy), CauseCPU)
 		case errors.Is(err, img.ErrBudget):
-			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
+			background(weight)
 			return p.writeBuffered(w, resp, wire, in.n, PassBudget)
 		case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):
-			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
+			background(weight)
 			return p.writeBuffered(w, resp, wire, in.n, PassTimeout)
 		case errors.Is(err, img.ErrUnsupported):
-			p.cache.Add(key, &xcache.Entry{Keep: true, Expires: p.expiry(resp.Header)})
+			if !fl.private {
+				p.cache.Add(key, &xcache.Entry{Keep: true, Expires: p.expiry(resp.Header)})
+			}
 			return withCause(p.writeBuffered(w, resp, wire, in.n, PassType), leftAlone(kind, err))
 		case err != nil:
 			return withCause(p.writeBuffered(w, resp, wire, in.n, PassError), "recode: "+errCause(err))
 		}
 		entry = entryFor(res, len(plain), p.cfg.MinGain, p.expiry(resp.Header))
-		if !res.Limited || !entry.Keep {
+		if !fl.private && (!res.Limited || !entry.Keep) {
 			// "the original is better" is not worth remembering when the time ran out
 			p.cache.Add(key, entry)
 		}
 		if res.Limited {
-			p.bg.submit(key, withoutBudget(input), p.expiry(resp.Header), weight)
+			background(weight)
 		}
 	}
 	if entry.Keep || !p.worthIt(len(entry.Data), len(wire)) {

@@ -26,7 +26,7 @@ func TestNoTransformFollowsTheProfile(t *testing.T) {
 		{img.ProfileExtreme, true, true},
 	} {
 		t.Run(tc.profile, func(t *testing.T) {
-			p := newPipeline(func(c *Config) { c.Profile = tc.profile })
+			p := newPipeline(func(c *Config) { c.Profile = tc.profile; c.NoTransform = "profile" })
 			rec, out := run(p, newReq("Accept", "image/webp"), newResp("image/jpeg", jpg, withHeader("Cache-Control", noTransform)))
 			if tc.wantImage {
 				if tc.profile == img.ProfileLossless {
@@ -81,7 +81,7 @@ func TestNoTransformConfiguration(t *testing.T) {
 		assert.Equal(t, Transformed, out.Reason)
 		assert.True(t, out.IgnoredNoTransform)
 	})
-	t.Run("profile is the default and means what the profile says", func(t *testing.T) {
+	t.Run("profile is an explicit legacy choice", func(t *testing.T) {
 		p := newPipeline(func(c *Config) { c.NoTransform = "profile"; c.Profile = img.ProfileSaver })
 		assert.Equal(t, Transformed, img1(p).Reason)
 	})
@@ -90,7 +90,7 @@ func TestNoTransformConfiguration(t *testing.T) {
 		custom := *profiles[img.ProfileBalanced]
 		custom.Name, custom.NoTransform = "mine", img.NoTransformImages
 		profiles["mine"] = &custom
-		p := newPipeline(func(c *Config) { c.Profiles = profiles; c.Profile = "mine" })
+		p := newPipeline(func(c *Config) { c.Profiles = profiles; c.Profile = "mine"; c.NoTransform = "profile" })
 		assert.Equal(t, Transformed, img1(p).Reason)
 	})
 	t.Run("a rule changes it for what it matches", func(t *testing.T) {

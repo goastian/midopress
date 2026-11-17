@@ -27,6 +27,7 @@ import (
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/pipeline"
 	"github.com/goastian/midopress/internal/proxy"
+	"github.com/goastian/midopress/internal/quota"
 	"github.com/goastian/midopress/internal/stats"
 	"github.com/goastian/midopress/internal/webui"
 )
@@ -47,6 +48,7 @@ type Deps struct {
 	Backend   img.Backend
 	Images    *imageapi.Service
 	Auth      *auth.Authenticator
+	Quotas    *quota.Ledger
 	CA        *mitm.CA // nil without HTTPS interception
 
 	// Config returns the configuration in use.

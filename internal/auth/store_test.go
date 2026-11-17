@@ -66,7 +66,9 @@ func TestStorePermissionsAndNoTempLeftovers(t *testing.T) {
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	require.Len(t, entries, 1)
+	require.Len(t, entries, 2)
+	assert.Equal(t, "devices.json", entries[0].Name())
+	assert.Equal(t, "devices.json.lock", entries[1].Name())
 }
 
 func TestStoreInvalidInput(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/quota"
 	"github.com/goastian/midopress/internal/rules"
 )
 
@@ -162,13 +163,22 @@ func (m MITM) Enabled() bool { return m.CACert != "" }
 
 // Auth configures client authentication and access control.
 type Auth struct {
-	Mode          string        `yaml:"mode"` // none, basic or token
-	User          string        `yaml:"user"`
-	Pass          string        `yaml:"pass"`
-	DevicesFile   string        `yaml:"devices_file"`
-	BlockGlobal   bool          `yaml:"block_global"`
-	MaxFailures   int           `yaml:"max_failures"`
-	FailureWindow time.Duration `yaml:"failure_window"`
+	Mode                   string        `yaml:"mode"` // none, basic or token
+	User                   string        `yaml:"user"`
+	Pass                   string        `yaml:"pass"`
+	DevicesFile            string        `yaml:"devices_file"`
+	BlockGlobal            bool          `yaml:"block_global"`
+	MaxFailures            int           `yaml:"max_failures"`
+	FailureWindow          time.Duration `yaml:"failure_window"`
+	MaxDevices             int           `yaml:"max_devices"`
+	RegistrationsPerMinute int           `yaml:"registrations_per_minute"`
+	Quotas                 DeviceQuotas  `yaml:"quotas"`
+}
+
+type DeviceQuotas struct {
+	File     string        `yaml:"file"`
+	Window   time.Duration `yaml:"window"`
+	Defaults quota.Limits  `yaml:"defaults"`
 }
 
 // Upstream configures the connections the proxy makes to origin servers.
@@ -204,7 +214,7 @@ type Pipeline struct {
 	Profile string `yaml:"profile"`
 	// NoTransform is what to do with a response that says Cache-Control:
 	// no-transform: respect it, recode the images that say it, recode anything,
-	// or (the default, "profile") do what the profile of the request says.
+	// or explicitly follow the profile. The default is "respect".
 	NoTransform string `yaml:"no_transform"`
 	Text        Text   `yaml:"text"`
 	Image       Image  `yaml:"image"`
@@ -212,14 +222,15 @@ type Pipeline struct {
 
 // Text configures the compression of text like content.
 type Text struct {
-	Brotli     int      `yaml:"brotli"`
-	Gzip       int      `yaml:"gzip"`
-	Zstd       int      `yaml:"zstd"`
-	Minify     Minify   `yaml:"minify"`
-	Recompress bool     `yaml:"recompress"`
-	BufferMax  ByteSize `yaml:"buffer_max"`
-	MinBytes   ByteSize `yaml:"min_bytes"`
-	MaxDecoded ByteSize `yaml:"max_decoded"`
+	AllowIntegrityChanges bool     `yaml:"allow_integrity_changes"`
+	Brotli                int      `yaml:"brotli"`
+	Gzip                  int      `yaml:"gzip"`
+	Zstd                  int      `yaml:"zstd"`
+	Minify                Minify   `yaml:"minify"`
+	Recompress            bool     `yaml:"recompress"`
+	BufferMax             ByteSize `yaml:"buffer_max"`
+	MinBytes              ByteSize `yaml:"min_bytes"`
+	MaxDecoded            ByteSize `yaml:"max_decoded"`
 }
 
 // Minify says how much each kind of text may be minified: off, safe or
@@ -309,6 +320,8 @@ func Default() *Config {
 			BlockGlobal:   true,
 			MaxFailures:   10,
 			FailureWindow: time.Minute,
+			MaxDevices:    128, RegistrationsPerMinute: 20,
+			Quotas: DeviceQuotas{Window: 24 * time.Hour, Defaults: quota.Limits{Requests: 100000, Bytes: 10 << 30, Concurrency: 16}},
 		},
 		Upstream: Upstream{
 			DialTimeout:           10 * time.Second,
@@ -329,7 +342,7 @@ func Default() *Config {
 			TranscodeWait: 250 * time.Millisecond,
 			MemoryBudget:  0,
 			Profile:       "balanced",
-			NoTransform:   "profile",
+			NoTransform:   "respect",
 			Text: Text{
 				Minify:     Minify{HTML: "safe", CSS: "safe", JS: "off", SVG: "safe", JSON: "safe"},
 				Recompress: true,
@@ -446,6 +459,23 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.FailureWindow <= 0 {
 		add("auth.failure_window must be positive")
+	}
+	if c.Auth.MaxDevices < 1 || c.Auth.MaxDevices > 10000 || c.Auth.RegistrationsPerMinute < 1 || c.Auth.RegistrationsPerMinute > 10000 {
+		add("auth registration limits must be between 1 and 10000")
+	}
+	if c.Auth.Quotas.Window < time.Second || c.Auth.Quotas.Window%time.Second != 0 || c.Auth.Quotas.Window > 365*24*time.Hour || !c.Auth.Quotas.Defaults.Valid() {
+		add("invalid auth.quotas window or defaults")
+	}
+	if c.Auth.Mode == "token" && c.Auth.Quotas.File != "" {
+		q, _ := filepath.Abs(c.Auth.Quotas.File)
+		for _, protected := range []string{c.Auth.DevicesFile, c.Web.TokenPath(), c.MITM.CAKey, c.MITM.CACert} {
+			if protected != "" {
+				p, _ := filepath.Abs(protected)
+				if q == p {
+					add("auth.quotas.file must not replace authentication or CA files")
+				}
+			}
+		}
 	}
 
 	if nt := c.Pipeline.NoTransform; nt != "profile" && !slices.Contains(NoTransformModes, nt) {

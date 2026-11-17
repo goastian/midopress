@@ -9,6 +9,7 @@ import { ago, bytes, count, dateTime, percent } from '../composables/format'
 import UiIcon from '../components/UiIcon.vue'
 import UiModal from '../components/UiModal.vue'
 import DevicesAddModal from '../components/DevicesAddModal.vue'
+import DeviceQuotasModal from '../components/DeviceQuotasModal.vue'
 import PagesCopyButton from '../components/PagesCopyButton.vue'
 
 const now = ref(Date.now())
@@ -96,6 +97,13 @@ async function setProfile(d: Device, ev: Event) {
 }
 
 const adding = ref(false)
+const editingQuotas = ref<Device | null>(null)
+async function quotasSaved(updated: Device) {
+  devices.value = devices.value?.map((d) => d.id === updated.id ? updated : d) ?? [updated]
+  editingQuotas.value = null
+  toast(`Limits updated for ${updated.id}`)
+  await reloadDevices()
+}
 const revoking = ref<Device | null>(null)
 async function revoke() {
   const d = revoking.value
@@ -236,6 +244,7 @@ const setupYaml = `auth:
               <th>Last seen</th>
               <th class="r hide-sm">Requests</th>
               <th class="r">Saved</th>
+              <th>Window usage</th>
               <th><span class="sr-only">Actions</span></th>
             </tr>
           </thead>
@@ -253,7 +262,14 @@ const setupYaml = `auth:
               <td class="nowrap">{{ ago(d.last_seen, now) }}</td>
               <td class="r hide-sm mono">{{ count(d.requests) }}</td>
               <td class="r nowrap mono ok">{{ bytes(d.saved) }}</td>
-              <td class="r"><button class="btn small danger" :aria-label="`Revoke ${d.id}`" @click="revoking = d">Revoke</button></td>
+              <td>
+                <template v-if="d.quota">
+                  <div class="nowrap mono">{{ count(d.quota.requests) }} requests · {{ bytes(d.quota.bytes) }}</div>
+                  <div class="hint">{{ d.quotas ? 'Device limits' : 'Global limits' }} · {{ d.quota.active }} active requests · {{ d.quota.tunnels }} tunnels</div>
+                </template>
+                <span v-else class="muted">Not reported</span>
+              </td>
+              <td class="r"><div class="device-actions"><button class="btn small" :aria-label="`Quotas of ${d.id}`" @click="editingQuotas = d">Quotas</button><button class="btn small danger" :aria-label="`Revoke ${d.id}`" @click="revoking = d">Revoke</button></div></td>
             </tr>
           </tbody>
         </table>
@@ -261,6 +277,7 @@ const setupYaml = `auth:
     </section>
 
     <DevicesAddModal v-if="adding" :profiles="profileNames" :default-profile="defaultProfile" @close="adding = false" @created="reloadDevices" @notokens="onNoTokens" />
+    <DeviceQuotasModal v-if="editingQuotas" :device="editingQuotas" @close="editingQuotas = null" @saved="quotasSaved" />
 
     <UiModal v-if="revoking" :title="`Revoke ${revoking.id}`" @close="revoking = null">
       <p>The token of <code>{{ revoking.id }}</code> stops working at once and cannot be restored. The device will be refused until you add it again with a new token.</p>
@@ -282,4 +299,5 @@ const setupYaml = `auth:
 .inner { max-width: 640px; }
 .first { margin-top: 0.5rem; }
 .setup { display: flex; flex-direction: column; gap: 0.6rem; }
+.device-actions { display: flex; justify-content: flex-end; gap: 0.4rem; }
 </style>

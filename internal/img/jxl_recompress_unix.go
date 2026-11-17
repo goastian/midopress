@@ -36,8 +36,9 @@ var jxlLibNames = func() []string {
 }()
 
 var (
-	jxlOnce sync.Once
-	jxlErr  error
+	jxlOnce   sync.Once
+	jxlErr    error
+	jxlHandle uintptr
 
 	jxlEncoderCreate              func(mm uintptr) uintptr
 	jxlEncoderDestroy             func(enc uintptr)
@@ -94,6 +95,21 @@ func jxlLoad() {
 	purego.RegisterLibFunc(&jxlDecoderProcessInput, handle, "JxlDecoderProcessInput")
 	purego.RegisterLibFunc(&jxlDecoderSetJPEGBuffer, handle, "JxlDecoderSetJPEGBuffer")
 	purego.RegisterLibFunc(&jxlDecoderReleaseJPEGBuffer, handle, "JxlDecoderReleaseJPEGBuffer")
+	jxlHandle = handle
+}
+
+func jxlNativeVersion() string {
+	if !jxlNativeAvailable() {
+		return ""
+	}
+	address, err := purego.Dlsym(jxlHandle, "JxlEncoderVersion")
+	if err != nil {
+		return ""
+	}
+	var version func() uint32
+	purego.RegisterFunc(&version, address)
+	v := version()
+	return fmt.Sprintf("%d.%d.%d", v/1000000, v/1000%1000, v%1000)
 }
 
 func jxlIsDynamicBinary() bool {

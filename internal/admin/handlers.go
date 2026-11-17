@@ -76,6 +76,7 @@ func (s *Server) handleAbout(w http.ResponseWriter, _ *http.Request) {
 		Started: s.d.Started, UptimeSeconds: time.Since(s.d.Started).Seconds(),
 		Backend: s.d.Backend.Name(), Backends: img.Backends(), Native: map[string]bool{},
 		Codecs: img.RuntimeInfo(s.d.Backend), JPEGRecompression: img.JPEGRecompressAvailable(),
+		RuntimeComponents:     img.RuntimeInventory(s.d.Backend),
 		JPEGRecompressionPath: img.JPEGRecompressionExecutionPath(), Sandbox: s.d.Pipeline.Sandbox(),
 		Modules: []module{}, StateDir: cfg.Web.StateDirPath(), ProxyAddr: cfg.Listen.Addr,
 		TLS: cfg.Listen.TLS.Cert != "", MITM: cfg.MITM.Enabled(), AuthMode: cfg.Auth.Mode,

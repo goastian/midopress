@@ -3,7 +3,6 @@ package pipeline
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"io"
 	"net/http"
@@ -53,10 +52,10 @@ func (p *Pipeline) textFlow(w http.ResponseWriter, req *http.Request, resp *http
 	minify := minifier.Handles(mt)
 	// a page that loads this file with an integrity hash would block it if a
 	// byte changed
-	if minify && p.pages.pinned(requestURL(req)) {
+	if minify && !fl.private && p.pages.pinned(requestURL(req)) {
 		minify = false
 	}
-	learn := p.wantsPages(fl, mt)
+	learn := !fl.private && p.wantsPages(fl, mt)
 	asFont := fonts.Convertible(mt) && wantsWOFF2(req.Header)
 	buffered := resp.ContentLength >= 0 && resp.ContentLength <= p.cfg.Text.BufferMax
 	if !buffered {
@@ -76,7 +75,7 @@ func (p *Pipeline) textFlow(w http.ResponseWriter, req *http.Request, resp *http
 	// slowest levels, which give about a tenth less. Only profiles that keep
 	// their slow level for what can be cached (saver and extreme) pay for it.
 	squeeze := p.cfg.Text.Recompress && target == codec.Brotli && srcEnc == codec.Brotli && buffered &&
-		fl.prof.Text.BrotliStatic >= squeezeMinLevel && cacheable(resp.Header)
+		fl.prof.Text.BrotliStatic >= squeezeMinLevel && !fl.private && cacheable(resp.Header)
 	upgrade = upgrade || squeeze
 	switch {
 	case srcEnc != codec.None && !minify && !upgrade && !asFont:
@@ -105,8 +104,7 @@ func wantsWOFF2(h http.Header) bool {
 // cacheable guesses whether a response will be asked for again as it is, which
 // makes a slow compression level worth its cost.
 func cacheable(h http.Header) bool {
-	if h.Get("Set-Cookie") != "" || httpx.HeaderHasDirective(h, "Cache-Control", "private") ||
-		httpx.HeaderHasDirective(h, "Cache-Control", "no-store") || httpx.HeaderHasDirective(h, "Cache-Control", "no-cache") {
+	if !sharedCacheAllowed(nil, h) {
 		return false
 	}
 	if httpx.HeaderHasDirective(h, "Cache-Control", "immutable") {
@@ -171,7 +169,7 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, req *http.Request, resp *
 	}
 
 	if asFont {
-		if e := p.convertFontContext(req.Context(), plain, resp.Header); e != nil {
+		if e := p.convertFontFor(req.Context(), plain, resp.Header, !fl.private); e != nil {
 			if !p.worthIt(len(e.Data), len(wire)) {
 				return p.writeBuffered(w, resp, wire, in.n, PassNotSmaller)
 			}
@@ -212,7 +210,7 @@ func (p *Pipeline) textBuffered(w http.ResponseWriter, req *http.Request, resp *
 		}
 	}
 
-	static := target == codec.Brotli && cacheable(resp.Header)
+	static := target == codec.Brotli && !fl.private && cacheable(resp.Header)
 	if squeeze && !minified && !p.staticCached(fl, target, plain) && len(plain) > staticInlineMax(fl.prof.Text.BrotliStatic, fl.prof.Text.StaticWaitMS) {
 		// too big to make the request wait for the slow level: the next one
 		// finds it done
@@ -287,20 +285,21 @@ func staticInlineMax(level, waitMS int) int {
 	return int(mbps * 1e6 * float64(waitMS) / 1000)
 }
 
-func staticKey(prof string, target codec.Encoding, plain []byte) string {
-	sum := sha256.Sum256(plain)
-	return "text|" + prof + "|" + target.Token() + "|" + string(sum[:])
-}
-
 func (p *Pipeline) staticCached(fl *flow, target codec.Encoding, plain []byte) bool {
-	e, ok := p.cache.Get(staticKey(fl.prof.Name, target, plain))
+	if fl.private {
+		return false
+	}
+	e, ok := p.cache.Get(p.textCacheKey(fl, target.Token(), plain))
 	return ok && !e.Keep
 }
 
 // squeezeLater compresses plain at the slow level of the profile when a CPU slot
 // is free, and keeps the result by content.
 func (p *Pipeline) squeezeLater(fl *flow, target codec.Encoding, plain []byte, h http.Header) {
-	key := staticKey(fl.prof.Name, target, plain)
+	if fl.private || !sharedCacheAllowed(nil, h) {
+		return
+	}
+	key := p.textCacheKey(fl, target.Token(), plain)
 	codecs := fl.lv.texts[fl.prof.Name][1]
 	body := append([]byte(nil), plain...)
 	expires := p.expiry(h)
@@ -331,10 +330,11 @@ func (p *Pipeline) squeezeLater(fl *flow, target codec.Encoding, plain []byte, h
 // slow level to be worth the wait is compressed with the fast one, and the slow
 // one is made in the background.
 func (p *Pipeline) compress(fl *flow, target codec.Encoding, plain []byte, static bool, h http.Header) ([]byte, error) {
+	static = static && !fl.private && sharedCacheAllowed(nil, h)
 	prof := fl.prof
 	pair := fl.lv.texts[prof.Name]
 	if static {
-		key := staticKey(prof.Name, target, plain)
+		key := p.textCacheKey(fl, target.Token(), plain)
 		if e, ok := p.cache.Get(key); ok && !e.Keep {
 			return e.Data, nil
 		}
@@ -383,13 +383,19 @@ func (p *Pipeline) convertFont(plain []byte, h http.Header) *xcache.Entry {
 }
 
 func (p *Pipeline) convertFontContext(ctx context.Context, plain []byte, h http.Header) *xcache.Entry {
-	sum := sha256.Sum256(plain)
-	key := "font-v2-sandbox|" + string(sum[:])
-	if e, ok := p.cache.Get(key); ok {
-		if e.Keep {
-			return nil
+	return p.convertFontFor(ctx, plain, h, sharedCacheAllowed(nil, h))
+}
+
+func (p *Pipeline) convertFontFor(ctx context.Context, plain []byte, h http.Header, shared bool) *xcache.Entry {
+	shared = shared && sharedCacheAllowed(nil, h)
+	key := p.variantKey("font", nil, plain)
+	if shared {
+		if e, ok := p.cache.Get(key); ok {
+			if e.Keep {
+				return nil
+			}
+			return e
 		}
-		return e
 	}
 	if !p.acquireCPU() {
 		return nil
@@ -403,11 +409,15 @@ func (p *Pipeline) convertFontContext(ctx context.Context, plain []byte, h http.
 		out, err = fonts.ToWOFF2(plain)
 	}
 	if err != nil {
-		p.cache.Add(key, &xcache.Entry{Keep: true, Expires: p.expiry(h)})
+		if shared {
+			p.cache.Add(key, &xcache.Entry{Keep: true, Expires: p.expiry(h)})
+		}
 		return nil
 	}
 	e := &xcache.Entry{Data: out, ContentType: fonts.MediaTypeWOFF2, Expires: p.expiry(h)}
-	p.cache.Add(key, e)
+	if shared {
+		p.cache.Add(key, e)
+	}
 	return e
 }
 

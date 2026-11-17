@@ -564,6 +564,27 @@ test('POST /config/test: rules explained and the precedence of the profile', asy
 
 // ---------------------------------------------------------------- devices
 
+test('device quotas preserve profiles and accept explicit unlimited or inherited limits', async () => {
+  ok(await call('POST', api('/devices'), { id: 'quota_unit', profile: 'saver' }), 201, S.NewDevice)
+  try {
+    const q = { requests: 500, bytes: 1048576, concurrency: 3 }
+    const limited = ok(await call('PATCH', api('/devices/quota_unit'), { quotas: q }), 200, S.Device)
+    assert.equal(limited.profile, 'saver')
+    assert.deepEqual(limited.quotas, q)
+    const profileOnly = ok(await call('PATCH', api('/devices/quota_unit'), { profile: 'balanced' }), 200, S.Device)
+    assert.deepEqual(profileOnly.quotas, q)
+    invalid(await call('PATCH', api('/devices/quota_unit'), { profile: 'saver', quotas: { ...q, concurrency: -1 } }), 'quotas')
+    assert.equal(ok(await get(api('/devices')), 200).find((d) => d.id === 'quota_unit').profile, 'balanced')
+    const unlimited = ok(await call('PATCH', api('/devices/quota_unit'), { quotas: { requests: 0, bytes: 0, concurrency: 0 } }), 200, S.Device)
+    assert.equal(unlimited.quotas.requests, 0)
+    const inherited = ok(await call('PATCH', api('/devices/quota_unit'), { quotas: null }), 200, S.Device)
+    assert.equal(inherited.profile, 'balanced')
+    assert.equal('quotas' in inherited, false)
+  } finally {
+    await call('DELETE', api('/devices/quota_unit'))
+  }
+})
+
 test('device lifecycle', async () => {
   await fresh()
   const list = ok(await get(api('/devices')), 200)

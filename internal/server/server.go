@@ -27,6 +27,7 @@ import (
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/pipeline"
 	"github.com/goastian/midopress/internal/proxy"
+	"github.com/goastian/midopress/internal/quota"
 	"github.com/goastian/midopress/internal/rules"
 	"github.com/goastian/midopress/internal/stats"
 	"github.com/goastian/midopress/internal/sysmem"
@@ -90,6 +91,7 @@ type Server struct {
 	cfgMu     sync.Mutex
 
 	auth    *auth.Authenticator
+	quotas  *quota.Ledger
 	pipe    *pipeline.Pipeline
 	proxy   *proxy.Proxy
 	certs   *certReloader
@@ -108,6 +110,13 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 		log = slog.New(slog.DiscardHandler)
 	}
 	s := &Server{cfg: cfg, started: time.Now()}
+	success := false
+	defer func() {
+		if !success && s.quotas != nil {
+			s.quotas.Close()
+			s.auth.Close()
+		}
+	}()
 	for _, o := range opts {
 		o(s)
 	}
@@ -128,6 +137,15 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 	s.collector = stats.New(stats.Options{})
 	s.flows = flows.NewStore(cfg.Web.FlowBuffer, int64(cfg.Web.CaptureBytes))
 
+	if cfg.Auth.Mode == "token" {
+		store, err := auth.OpenStore(cfg.Auth.DevicesFile, true)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.ConfigureRegistration(cfg.Auth.MaxDevices, cfg.Auth.RegistrationsPerMinute); err != nil {
+			return nil, err
+		}
+	}
 	a, err := auth.New(auth.Options{
 		Mode:          auth.Mode(cfg.Auth.Mode),
 		User:          cfg.Auth.User,
@@ -141,6 +159,17 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 		return nil, fmt.Errorf("auth: %w", err)
 	}
 	s.auth = a
+	if cfg.Auth.Mode == "token" {
+		path := cfg.Auth.Quotas.File
+		if path == "" {
+			path = cfg.Auth.DevicesFile + ".usage.json"
+		}
+		s.quotas, err = quota.Open(path, cfg.Auth.Quotas.Window, cfg.Auth.Quotas.Defaults, a.DeviceQuotas)
+		if err != nil {
+			a.Close()
+			return nil, err
+		}
+	}
 
 	var (
 		issuer *mitm.Issuer
@@ -232,6 +261,7 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 		MagicHost: isMagic,
 		Metrics:   metricsHandler,
 		Auth:      a,
+		Quotas:    s.quotas,
 		Upstream:  upstream.New(upOpts),
 		Pipeline:  s.pipe,
 		Issuer:    issuer,
@@ -280,6 +310,7 @@ func New(cfg *config.Config, log *slog.Logger, opts ...Option) (*Server, error) 
 	if err := s.newAdmin(); err != nil {
 		return nil, err
 	}
+	success = true
 	return s, nil
 }
 
@@ -326,6 +357,7 @@ func pipelineConfig(cfg *config.Config) (pipeline.Config, error) {
 		TTL:              pipeline.TTLConfig{Min: cfg.Cache.MinTTL, Max: cfg.Cache.MaxTTL, Default: cfg.Cache.DefaultTTL},
 		Levels:           codec.Levels{Brotli: p.Text.Brotli, Gzip: p.Text.Gzip, Zstd: p.Text.Zstd},
 		Text: pipeline.TextConfig{
+			AllowIntegrityChanges: p.Text.AllowIntegrityChanges,
 			Minify: textmin.Config{
 				HTML: mode(p.Text.Minify.HTML), CSS: mode(p.Text.Minify.CSS), JS: mode(p.Text.Minify.JS),
 				SVG: mode(p.Text.Minify.SVG), JSON: mode(p.Text.Minify.JSON), SkipMinified: true,
@@ -454,6 +486,15 @@ func (s *Server) reloadConfig() error {
 
 // apply puts a configuration in force. The caller holds cfgMu.
 func (s *Server) apply(cfg *config.Config) error {
+	if staticPipeline(cfg.Pipeline) != staticPipeline(s.cfg.Pipeline) {
+		return errors.New("static pipeline, image metric and backend options require a restart")
+	}
+	if cfg.Cache.Dir != s.cfg.Cache.Dir || cfg.Cache.Memory != s.cfg.Cache.Memory || cfg.Cache.MaxSize != s.cfg.Cache.MaxSize {
+		return errors.New("cache directory and capacity require a restart")
+	}
+	if cfg.Auth != s.cfg.Auth {
+		return errors.New("authentication and quota defaults require a restart; per-device quota overrides apply immediately")
+	}
 	if cfg.ImageAPI != s.cfg.ImageAPI {
 		return errors.New("image_api listener, key and limits require a restart")
 	}
@@ -482,10 +523,21 @@ func (s *Server) apply(cfg *config.Config) error {
 	return nil
 }
 
+func staticPipeline(p config.Pipeline) config.Pipeline {
+	p.Profile, p.NoTransform = "", ""
+	p.Text.Minify = config.Minify{}
+	p.Text.AllowIntegrityChanges = false
+	p.Text.Brotli, p.Text.Gzip, p.Text.Zstd = 0, 0, 0
+	return p
+}
+
 // Run serves until ctx is done, then shuts down gracefully: it stops
 // accepting connections, lets requests and tunnels finish for up to
 // server.shutdown_grace, and closes whatever is left.
 func (s *Server) Run(ctx context.Context) error {
+	if s.quotas != nil {
+		defer s.quotas.Close()
+	}
 	if err := s.Listen(); err != nil {
 		return err
 	}

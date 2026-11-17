@@ -85,9 +85,12 @@ export const Flow = obj({
 export const FlowList = obj({ enabled: bool, capacity: num, total: num, flows: arr(Flow) })
 export const FlowCompare = obj({ metric: lit('dssim'), distance: num, original_bytes: num, result_bytes: num, width: num, height: num, comparable: bool })
 
+const QuotaLimits = obj({ requests: num, bytes: num, concurrency: num })
+const QuotaUsage = obj({ requests: num, bytes: num, active: num, tunnels: num, window_start: str, window_end: str, limits: QuotaLimits })
 export const Device = obj({
   id: str, profile: str, created: str, last_seen: or(str, nul), active: bool, requests: num, bytes_in: num, bytes_out: num, saved: num,
-})
+  quotas: QuotaLimits, quota: QuotaUsage,
+}, ['quotas', 'quota'])
 export const Client = obj({
   key: str, device: str, addr: str, user_agent: str, first_seen: str, last_seen: str, active: bool, requests: num,
   in_flight: num, bytes_in: num, bytes_out: num, saved: num, profile: str, by_kind: rec(Bucket),

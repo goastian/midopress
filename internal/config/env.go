@@ -168,6 +168,12 @@ func setValue(v reflect.Value, raw string) error {
 			return err
 		}
 		v.SetFloat(f)
+	case v.Kind() == reflect.Uint64:
+		n, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return err
+		}
+		v.SetUint(n)
 	case v.Kind() == reflect.Slice && v.Type().Elem().Kind() == reflect.String:
 		var items []string
 		for item := range strings.SplitSeq(raw, ",") {

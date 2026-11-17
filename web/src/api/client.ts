@@ -1,7 +1,7 @@
 import type {
   About, ApiError, CAInfo, Client, ConfigView, Device, Flow, FlowCompare, FlowList, LogState,
   MissedByReason, NewDevice, ProfileOverride, Rule, ServerEvent, Settings, StatsSnapshot, TestRequest,
-  TestResult, ValidateResult, ImageAPIInfo, ImageRequest, SignedImage, ImageCredentialScope, ImageCredential,
+  TestResult, ValidateResult, ImageAPIInfo, ImageRequest, SignedImage, ImageCredentialScope, ImageCredential, DeviceQuotaLimits,
 } from './types'
 
 const BASE = '/api/v1'
@@ -134,6 +134,8 @@ export const api = {
   addDevice: (id: string, profile: string) => post<NewDevice>('/devices', { id, profile }),
   setDeviceProfile: (id: string, profile: string) =>
     patch<Device>(`/devices/${encodeURIComponent(id)}`, { profile }),
+  setDeviceQuotas: (id: string, quotas: DeviceQuotaLimits | null) =>
+    patch<Device>(`/devices/${encodeURIComponent(id)}`, { quotas }),
   revokeDevice: (id: string) => del<void>(`/devices/${encodeURIComponent(id)}`),
   clients: () => get<Client[]>('/clients'),
 

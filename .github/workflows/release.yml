@@ -31,7 +31,15 @@ jobs:
             name="midopress_${GITHUB_REF_NAME#v}_${platform}"
             mkdir "$name"
             cp "$d"midopress* "$name/"
-            cp LICENSE NOTICE README.md "$name/"
+            binary="$(find "$d" -maxdepth 1 -type f -name 'midopress*' -print -quit)"
+            python3 scripts/sbom.py "$binary" --version "${GITHUB_REF_NAME#v}" --output "$name/sbom.cdx.json"
+            cp LICENSE NOTICE README.md SECURITY.md "$name/"
+            mkdir -p "$name/docs" "$name/codec-licenses/jxl"
+            cp docs/19-seguridad-operacion.md "$name/docs/"
+            cp internal/jxlcodec/lib/manifest.json "$name/codec-licenses/jxl/"
+            cp internal/jxlcodec/lib/licenses/* "$name/codec-licenses/jxl/"
+            cp internal/colorcms/LICENSE.lcms2 "$name/codec-licenses/"
+            cp internal/img/codec_sources.json "$name/codec-licenses/"
             if [[ "$platform" == windows_* ]]; then zip -qr "$name.zip" "$name"; else tar czf "$name.tar.gz" "$name"; fi
           done
           ls

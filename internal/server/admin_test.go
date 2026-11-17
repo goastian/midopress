@@ -797,6 +797,9 @@ func TestServiceCommands(t *testing.T) {
 		Modules                    []map[string]any
 		Native                     map[string]bool
 		MITM                       bool
+		RuntimeComponents          []struct {
+			ID, Version, Execution, SHA256 string
+		} `json:"runtime_components"`
 	}
 	a.into("GET", "/api/v1/about", nil, 200, &about)
 	assert.Equal(t, "wasm", about.Backend)
@@ -804,6 +807,16 @@ func TestServiceCommands(t *testing.T) {
 	assert.NotEmpty(t, about.Modules)
 	assert.Contains(t, about.Native, "avif")
 	assert.True(t, about.MITM)
+	components := map[string]string{}
+	for _, c := range about.RuntimeComponents {
+		components[c.ID] = c.Version
+		assert.NotEmpty(t, c.Execution)
+		if c.ID == "jxl-wasi" || c.ID == "lcms-wasi" {
+			assert.Len(t, c.SHA256, 64)
+		}
+	}
+	assert.Equal(t, "0.11.2", components["jxl-wasi"])
+	assert.Equal(t, "2.19.1", components["lcms-wasi"])
 
 	resp, body := a.call("GET", "/api/v1/metrics", nil)
 	assert.Equal(t, 200, resp.StatusCode)

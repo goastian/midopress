@@ -11,6 +11,7 @@ import (
 
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/pipeline"
+	"github.com/goastian/midopress/internal/quota"
 	"github.com/goastian/midopress/internal/rules"
 )
 
@@ -37,6 +38,18 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	target := net.JoinHostPort(host, port)
 	cl := pipeline.ClientFrom(r.Context())
+	lease, allowed := p.admit(w, r, true)
+	if !allowed {
+		return
+	}
+	owned := false
+	if lease != nil {
+		defer func() {
+			if !owned {
+				lease.Close()
+			}
+		}()
+	}
 	intercept := p.opts.Issuer != nil && !p.opts.Policy.Passthrough(host)
 	if intercept {
 		switch p.opts.Pipeline.HostDecision(host, cl.Addr).Action {
@@ -65,12 +78,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	client = p.meterConnection(client, lease, cl.Device)
+	owned = lease != nil
 	if up != nil {
 		p.tunnels.tunnel(client, up)
 		return
 	}
-	p.intercept(client, host, target, cl.Device)
-	if sc, ok := client.(*streamConn); ok {
+	p.intercept(client, host, target, cl.Device, lease)
+	if sc, ok := unwrapStream(client); ok {
 		// An HTTP/2 stream ends when its handler returns, so wait for the
 		// intercepted connection to be done with it.
 		<-sc.closed
@@ -103,7 +118,7 @@ func (p *Proxy) takeover(w http.ResponseWriter, r *http.Request) (net.Conn, erro
 
 // intercept decrypts the client side of the tunnel and hands the connection to
 // the HTTP server that serves the requests found inside it.
-func (p *Proxy) intercept(client net.Conn, host, target, device string) {
+func (p *Proxy) intercept(client net.Conn, host, target, device string, lease *quota.Lease) {
 	first, conn, err := p.sniff(client)
 	if err != nil {
 		_ = client.Close()
@@ -120,7 +135,7 @@ func (p *Proxy) intercept(client net.Conn, host, target, device string) {
 		return
 	}
 
-	tc := tls.Server(&hostConn{Conn: conn, host: host, device: device}, p.tlsConf)
+	tc := tls.Server(&hostConn{Conn: conn, host: host, device: device, metered: lease != nil}, p.tlsConf)
 	ctx, cancel := context.WithTimeout(context.Background(), p.opts.HandshakeTimeout)
 	err = tc.HandshakeContext(ctx)
 	cancel()
@@ -146,6 +161,14 @@ func (p *Proxy) intercept(client net.Conn, host, target, device string) {
 	if !p.ml.deliver(tc) {
 		_ = tc.Close()
 	}
+}
+
+func unwrapStream(c net.Conn) (*streamConn, bool) {
+	if q, ok := c.(*quotaConn); ok {
+		c = q.Conn
+	}
+	sc, ok := c.(*streamConn)
+	return sc, ok
 }
 
 // sniff reads the first byte of the client stream to tell TLS from anything

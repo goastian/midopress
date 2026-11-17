@@ -102,15 +102,18 @@ pipeline:
   # RFC 9111 says a proxy must not change. It was made to stop operators from
   # damaging content on its way to a person; here the proxy is the one the person
   # chose, and an image is only replaced by a result that was measured.
-  #   profile  what the profile says (default): lossless and balanced respect it,
+  #   profile  explicit legacy mode: lossless and balanced respect it,
   #            saver and extreme recode the images that carry it
-  #   respect  always keep it
+  #   respect  always keep it (default, independent of the chosen profile)
   #   images   recode images that carry it, in every profile
   #   all      recode text too, which can break files that are signed or hashed
   # A request that says it is always respected, and so are ranges. A rule can
   # change it for a site with `set: {no_transform: images}`.
-  no_transform: profile
+  no_transform: respect
   text:
+    # JS/CSS bytes stay exact for dynamic SRI and CSP hashes by default.
+    # Explicitly enabling this can break integrity checks on unknown resources.
+    allow_integrity_changes: false
     # Compression levels. 0 uses the level of the profile, which also compresses
     # responses that look cacheable with a slower level, once, and keeps the result.
     brotli: 0

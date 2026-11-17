@@ -1,0 +1,74 @@
+{
+  "components": [
+    {
+      "declared_sources": {
+        "LIBWEBP_VERSION": "v1.6.0"
+      },
+      "id": "webp-embedded",
+      "inputs": [
+        {
+          "path": "lib/webp.wasm",
+          "sha256": "133839a7d1b20266905fc35633b973ca5b7fabec7d56db58a7d5f0865cabc859"
+        },
+        {
+          "path": "libwebp.go",
+          "sha256": "854dffeb8d261bc0c7925510f3a375beb986e9ad6319c34394168f0e9156fa18"
+        }
+      ],
+      "module": "github.com/gen2brain/webp",
+      "module_sum": "h1:SUDdmxADOAiPQ+5ylNmuHhuYf2dOi0KgKZHL5vpVCNU=",
+      "module_version": "v0.6.4",
+      "name": "webp",
+      "version": "1.6.0",
+      "version_source": "pinned Go module build recipe; main/stable are not immutable upstream revisions"
+    },
+    {
+      "declared_sources": {
+        "LIBAVIF_AOM_VERSION": "v3.14.1",
+        "LIBAVIF_DAV1D_VERSION": "1.5.3",
+        "LIBAVIF_VERSION": "v1.4.2",
+        "LIBAVIF_YUV_VERSION": "stable"
+      },
+      "id": "avif-embedded",
+      "inputs": [
+        {
+          "path": "lib/avif.wasm.gz",
+          "sha256": "92ffd604d276359c2df829effc615cd9f286c36ece5761644929e4396eb97360"
+        },
+        {
+          "path": "libavif.go",
+          "sha256": "221cd7cc33255b883e0c235280e6273d40596ff17c99bfe9a3e7a9aedb9425d9"
+        }
+      ],
+      "module": "github.com/gen2brain/avif",
+      "module_sum": "h1:/8WSgcU+IEF0jhKYsUZ/mzlziFuTeJFpIKBj2siTQps=",
+      "module_version": "v0.6.0",
+      "name": "avif",
+      "version": "1.4.2",
+      "version_source": "pinned Go module build recipe; main/stable are not immutable upstream revisions"
+    },
+    {
+      "declared_sources": {
+        "JPEGLI_VERSION": "main"
+      },
+      "id": "jpegli-embedded",
+      "inputs": [
+        {
+          "path": "lib/jpegli.wasm.gz",
+          "sha256": "9c38459d1f37ceb008c18f7b60d77a4aa20dd41a480b014ff4845873ee864d39"
+        },
+        {
+          "path": "libjpegli.go",
+          "sha256": "51f5b93b08cffca304b876e8257ba096cf94e6d16a680b04160015a1a737be16"
+        }
+      ],
+      "module": "github.com/gen2brain/jpegli",
+      "module_sum": "h1:m8/fIKEgvt+l/rh9STDZcm3wdXoktaPmhki4F3OKpO8=",
+      "module_version": "v0.4.2",
+      "name": "jpegli",
+      "version": "unreported-upstream",
+      "version_source": "pinned Go module build recipe; main/stable are not immutable upstream revisions"
+    }
+  ],
+  "schema": 1
+}

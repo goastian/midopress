@@ -65,6 +65,7 @@ func TestRuleSetChangesMinification(t *testing.T) {
 	src := []byte("<!DOCTYPE html>\n<html>\n  <body>\n" + strings.Repeat("    <p>   hello    world   </p>\n\n", 100) +
 		"    <script>\n      var   a  =  1;\n      var b   =   2;\n    </script>\n  </body>\n</html>\n")
 	p := newPipeline(func(c *Config) {
+		c.Text.AllowIntegrityChanges = true
 		c.Text.Minify = textmin.Config{HTML: textmin.Safe, CSS: textmin.Safe, JS: textmin.Off, SVG: textmin.Safe, JSON: textmin.Safe}
 		c.Rules = compile(t,
 			rules.Rule{Match: `~u /nominify/`, Set: map[string]any{"minify_html": "off"}},
@@ -184,7 +185,7 @@ func TestCacheEntriesCarryTheTTL(t *testing.T) {
 	resp := newResp("image/jpeg", jpg, withHeader("Cache-Control", "public, max-age=7200"))
 	_, out := run(p, newReq(), resp)
 	require.Equal(t, Transformed, out.Reason)
-	key := imageKey(jpg, p.live.Load().profiles[img.ProfileBalanced], img.Caps{}, img.Hints{}, 0)
+	key := p.imageCacheKey(jpg, p.live.Load().profiles[img.ProfileBalanced], img.Caps{}, img.Hints{}, 0)
 	e, ok := p.cache.Get(key)
 	require.True(t, ok)
 	assert.WithinDuration(t, time.Now().Add(2*time.Hour), e.Expires, time.Minute)
@@ -192,9 +193,8 @@ func TestCacheEntriesCarryTheTTL(t *testing.T) {
 	other := jpegBytes(t, 330, 240, 95)
 	_, out = run(p, newReq(), newResp("image/jpeg", other, withHeader("Cache-Control", "no-store")))
 	require.Equal(t, Transformed, out.Reason)
-	e, ok = p.cache.Get(imageKey(other, p.live.Load().profiles[img.ProfileBalanced], img.Caps{}, img.Hints{}, 0))
-	require.True(t, ok)
-	assert.WithinDuration(t, time.Now().Add(time.Minute), e.Expires, 10*time.Second)
+	_, ok = p.cache.Get(p.imageCacheKey(other, p.live.Load().profiles[img.ProfileBalanced], img.Caps{}, img.Hints{}, 0))
+	require.False(t, ok, "no-store cannot enter even the minimum-TTL cache")
 }
 
 func TestInstrumentCountsWhatHappened(t *testing.T) {

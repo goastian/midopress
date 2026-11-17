@@ -86,11 +86,12 @@ const (
 
 // TextConfig tunes the compression of text like content.
 type TextConfig struct {
-	Minify     textmin.Config // what to minify, and how far
-	Recompress bool           // turn gzip, deflate or zstd responses into brotli when the client accepts it
-	BufferMax  int64          // bodies up to this size are buffered, which allows the only-if-smaller check
-	MinBytes   int64          // smaller bodies are not worth compressing
-	MaxDecoded int64          // limit for what a compressed body may expand to
+	AllowIntegrityChanges bool           // explicit opt-in to changing JS/CSS subresource bytes
+	Minify                textmin.Config // what to minify, and how far
+	Recompress            bool           // turn gzip, deflate or zstd responses into brotli when the client accepts it
+	BufferMax             int64          // bodies up to this size are buffered, which allows the only-if-smaller check
+	MinBytes              int64          // smaller bodies are not worth compressing
+	MaxDecoded            int64          // limit for what a compressed body may expand to
 }
 
 // ImageConfig tunes image recoding.
@@ -128,8 +129,7 @@ type Config struct {
 	MemoryBudget  int64         // bytes the pipeline may hold in buffers at the same time
 	Profile       string        // default profile
 	// NoTransform is what to do with a response that says Cache-Control:
-	// no-transform: respect, images or all. Empty or "profile" leaves it to the
-	// profile of the request, which respects it unless it says otherwise.
+	// no-transform: respect by default; images, all or profile require an explicit choice.
 	NoTransform string
 	// Profiles are the profiles available, nil for the built-in ones.
 	Profiles map[string]*img.Profile
@@ -158,6 +158,7 @@ func DefaultConfig() Config {
 		TranscodeWait: 250 * time.Millisecond,
 		MemoryBudget:  256 << 20,
 		Profile:       img.ProfileBalanced,
+		NoTransform:   "respect",
 		TTL:           DefaultTTL(),
 		Text: TextConfig{
 			Minify:     textmin.DefaultConfig(),
@@ -198,10 +199,11 @@ type Pipeline struct {
 	sem    chan struct{}
 	mem    *semaphore.Weighted
 	// memUsed is what is reserved of the budget now, for the gauge.
-	memUsed atomic.Int64
-	inst    atomic.Pointer[instruments]
-	pages   *pageHints
-	sandbox SandboxInfo
+	memUsed      atomic.Int64
+	inst         atomic.Pointer[instruments]
+	pages        *pageHints
+	sandbox      SandboxInfo
+	cacheBackend string
 
 	capture atomic.Bool
 
@@ -279,6 +281,7 @@ func New(cfg Config) *Pipeline {
 		pages:  newPageHints(cfg.WorkerExecutable, !cfg.UnsafeInProcess),
 	}
 	p.engine.Metric = metric
+	p.cacheBackend = cacheBackendIdentity(cfg.Backend, !cfg.UnsafeInProcess)
 	p.engine.OnEncode = p.observeEncode
 	p.live.Store(lv)
 	p.bg = newBackground(p)
@@ -531,6 +534,11 @@ func (p *Pipeline) handle(w http.ResponseWriter, req *http.Request, resp *http.R
 	fl, err := lv.newFlow(req, dec)
 	if err != nil {
 		return p.passthrough(w, resp, PassError)
+	}
+	fl.private = !sharedCacheAllowed(req, resp.Header)
+	if fl.private {
+		fl.opts.minify.CSS = textmin.Off
+		fl.opts.minify.JS = textmin.Off
 	}
 	overrode := false
 	if reason == PassNoTransform {

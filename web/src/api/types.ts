@@ -286,6 +286,22 @@ export interface FlowCompare {
 // ---------------------------------------------------------------- devices
 
 /** A device with a token. */
+export interface DeviceQuotaLimits {
+  requests: number
+  bytes: number
+  concurrency: number
+}
+
+export interface DeviceQuotaUsage {
+  requests: number
+  bytes: number
+  active: number
+  tunnels: number
+  window_start: string
+  window_end: string
+  limits: DeviceQuotaLimits
+}
+
 export interface Device {
   id: string
   /** profile assigned to it, empty for the default */
@@ -298,6 +314,8 @@ export interface Device {
   bytes_in: number
   bytes_out: number
   saved: number
+  quotas?: DeviceQuotaLimits
+  quota?: DeviceQuotaUsage
 }
 
 /** Somebody that is connected, with or without a token. */
@@ -501,6 +519,16 @@ export interface Module {
   version: string
 }
 
+export interface RuntimeComponent {
+  id: string
+  name: string
+  version: string
+  execution: string
+  source: string
+  status: string
+  sha256?: string
+}
+
 export interface About {
   version: string
   go_version: string
@@ -512,6 +540,7 @@ export interface About {
   backends: string[]
   native: Record<string, boolean>
   codecs?: Record<string, { encoder: string; decoder: string; reason: string }>
+  runtime_components?: RuntimeComponent[]
   jpeg_recompression?: boolean
   jpeg_recompression_path?: string
   sandbox?: { enforced: boolean; policy: string; threads: string; filesystem: string; network: string;

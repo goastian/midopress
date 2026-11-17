@@ -161,6 +161,7 @@ func TestAFileWithAnIntegrityHashIsNeverMinified(t *testing.T) {
 	for _, profile := range []string{img.ProfileBalanced, img.ProfileSaver} {
 		t.Run(profile, func(t *testing.T) {
 			p := newPipeline(func(c *Config) {
+				c.Text.AllowIntegrityChanges = true
 				c.Profile = profile
 				c.Text.Minify = textmin.Config{HTML: textmin.Off, CSS: textmin.Safe, JS: textmin.Safe, SVG: textmin.Off, JSON: textmin.Off}
 			})
@@ -186,7 +187,7 @@ func TestAFileWithAnIntegrityHashIsNeverMinified(t *testing.T) {
 func TestJavaScriptIsMinifiedBySaverAndExtremeOnly(t *testing.T) {
 	js := []byte(strings.Repeat("function  add ( a , b )  {\n    return   a + b ;\n}\n\n// a comment\n", 80))
 	for profile, want := range map[string]bool{img.ProfileLossless: false, img.ProfileBalanced: false, img.ProfileSaver: true, img.ProfileExtreme: true} {
-		p := newPipeline(func(c *Config) { c.Profile = profile })
+		p := newPipeline(func(c *Config) { c.Profile = profile; c.Text.AllowIntegrityChanges = true })
 		_, out := run(p, pageReq("/app.js", "Accept-Encoding", "gzip"), newResp("application/javascript", js))
 		require.Equal(t, Transformed, out.Reason, profile)
 		assert.Equal(t, want, out.Minified, profile)

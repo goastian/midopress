@@ -1,8 +1,11 @@
 package admin
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +18,7 @@ import (
 	"github.com/goastian/midopress/internal/auth"
 	"github.com/goastian/midopress/internal/magic"
 	"github.com/goastian/midopress/internal/qr"
+	"github.com/goastian/midopress/internal/quota"
 )
 
 var deviceID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -36,7 +40,11 @@ func (s *Server) devices(w http.ResponseWriter) (*auth.Store, bool) {
 }
 
 func (s *Server) deviceView(d auth.Device, st map[string]deviceStat, active map[string]bool) Device {
-	out := Device{ID: d.ID, Profile: d.Profile, Created: d.Created, Active: active[d.ID]}
+	out := Device{ID: d.ID, Profile: d.Profile, Created: d.Created, Active: active[d.ID], Quotas: d.Quotas}
+	if s.d.Quotas != nil {
+		usage := s.d.Quotas.View(d.ID)
+		out.Quota = &usage
+	}
 	if x, ok := st[d.ID]; ok {
 		out.Requests, out.BytesIn, out.BytesOut, out.Saved = x.Requests, x.BytesIn, x.BytesOut, x.Saved
 		if !x.LastSeen.IsZero() {
@@ -101,7 +109,8 @@ func (s *Server) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		Profile string `json:"profile"`
 		// Host is how the extension reaches the proxy; it defaults to the name the
 		// administration interface was reached with
-		Host string `json:"host"`
+		Host   string        `json:"host"`
+		Quotas *quota.Limits `json:"quotas"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -111,6 +120,10 @@ func (s *Server) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.checkProfile(w, body.Profile) {
+		return
+	}
+	if body.Quotas != nil && !body.Quotas.Valid() {
+		writeInvalid(w, "invalid quotas", []Issue{{Index: -1, Field: "quotas", Message: "use nonnegative requests, bytes and concurrency; zero means unlimited"}})
 		return
 	}
 	store, ok := s.devices(w)
@@ -123,8 +136,13 @@ func (s *Server) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	token, err := store.Add(body.ID, body.Profile)
+	token, err := store.AddWithQuotas(body.ID, body.Profile, body.Quotas)
 	if err != nil {
+		if errors.Is(err, auth.ErrRegistrationLimit) {
+			w.Header().Set("Retry-After", "60")
+			writeError(w, http.StatusTooManyRequests, "registration_limit", "device registration limit reached")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
@@ -164,13 +182,23 @@ func (s *Server) reloadAuth() {
 func (s *Server) handlePatchDevice(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Profile string `json:"profile"`
+		Profile *string         `json:"profile"`
+		Quotas  json.RawMessage `json:"quotas"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if !s.checkProfile(w, body.Profile) {
+	if body.Profile != nil && !s.checkProfile(w, *body.Profile) {
 		return
+	}
+	var limits *quota.Limits
+	if len(body.Quotas) > 0 && !bytes.Equal(bytes.TrimSpace(body.Quotas), []byte("null")) {
+		decoder := json.NewDecoder(bytes.NewReader(body.Quotas))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&limits) != nil || limits == nil || !limits.Valid() {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_quota", "use nonnegative byte, request and concurrency limits")
+			return
+		}
 	}
 	store, ok := s.devices(w)
 	if !ok {
@@ -184,7 +212,11 @@ func (s *Server) handlePatchDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "there is no device called "+id)
 		return
 	}
-	if err := store.SetProfile(id, body.Profile); err != nil {
+	var update **quota.Limits
+	if len(body.Quotas) > 0 {
+		update = &limits
+	}
+	if err := store.UpdateDevice(id, body.Profile, update); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

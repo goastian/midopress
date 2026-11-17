@@ -6,6 +6,7 @@ import (
 	"github.com/goastian/midopress/internal/flows"
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/pipeline"
+	"github.com/goastian/midopress/internal/quota"
 	"github.com/goastian/midopress/internal/stats"
 )
 
@@ -99,15 +100,17 @@ type flowCompare struct {
 
 // Device is a device with a token.
 type Device struct {
-	ID       string     `json:"id"`
-	Profile  string     `json:"profile"`
-	Created  time.Time  `json:"created"`
-	LastSeen *time.Time `json:"last_seen"`
-	Active   bool       `json:"active"`
-	Requests uint64     `json:"requests"`
-	BytesIn  uint64     `json:"bytes_in"`
-	BytesOut uint64     `json:"bytes_out"`
-	Saved    int64      `json:"saved"`
+	ID       string        `json:"id"`
+	Profile  string        `json:"profile"`
+	Created  time.Time     `json:"created"`
+	LastSeen *time.Time    `json:"last_seen"`
+	Active   bool          `json:"active"`
+	Requests uint64        `json:"requests"`
+	BytesIn  uint64        `json:"bytes_in"`
+	BytesOut uint64        `json:"bytes_out"`
+	Saved    int64         `json:"saved"`
+	Quotas   *quota.Limits `json:"quotas,omitempty"`
+	Quota    *quota.Usage  `json:"quota,omitempty"`
 }
 
 type newDevice struct {
@@ -229,6 +232,7 @@ type about struct {
 	Backends              []string                    `json:"backends"`
 	Native                map[string]bool             `json:"native"`
 	Codecs                map[string]img.CodecRuntime `json:"codecs"`
+	RuntimeComponents     []img.RuntimeComponent      `json:"runtime_components"`
 	JPEGRecompression     bool                        `json:"jpeg_recompression"`
 	JPEGRecompressionPath string                      `json:"jpeg_recompression_path"`
 	Sandbox               pipeline.SandboxInfo        `json:"sandbox"`

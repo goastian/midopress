@@ -51,17 +51,19 @@ func TestHintsFrom(t *testing.T) {
 }
 
 func TestImageKeyDependsOnEverythingThatChangesTheResult(t *testing.T) {
+	p := newPipeline()
+	defer p.Close()
 	bal, _ := img.Lookup(img.ProfileBalanced)
 	sav, _ := img.Lookup(img.ProfileSaver)
 	raw := []byte("pixels")
-	base := imageKey(raw, bal, img.Caps{WebP: true}, img.Hints{}, 0)
-	assert.Equal(t, base, imageKey(raw, bal, img.Caps{WebP: true}, img.Hints{}, 0))
+	base := p.imageCacheKey(raw, bal, img.Caps{WebP: true}, img.Hints{}, 0)
+	assert.Equal(t, base, p.imageCacheKey(raw, bal, img.Caps{WebP: true}, img.Hints{}, 0))
 	for name, other := range map[string]string{
-		"bytes":   imageKey([]byte("other"), bal, img.Caps{WebP: true}, img.Hints{}, 0),
-		"profile": imageKey(raw, sav, img.Caps{WebP: true}, img.Hints{}, 0),
-		"caps":    imageKey(raw, bal, img.Caps{WebP: true, AVIF: true}, img.Hints{}, 0),
-		"hints":   imageKey(raw, bal, img.Caps{WebP: true}, img.Hints{ViewportWidth: 400, DPR: 2}, 0),
-		"fixed":   imageKey(raw, bal, img.Caps{WebP: true}, img.Hints{}, 80),
+		"bytes":   p.imageCacheKey([]byte("other"), bal, img.Caps{WebP: true}, img.Hints{}, 0),
+		"profile": p.imageCacheKey(raw, sav, img.Caps{WebP: true}, img.Hints{}, 0),
+		"caps":    p.imageCacheKey(raw, bal, img.Caps{WebP: true, AVIF: true}, img.Hints{}, 0),
+		"hints":   p.imageCacheKey(raw, bal, img.Caps{WebP: true}, img.Hints{ViewportWidth: 400, DPR: 2}, 0),
+		"fixed":   p.imageCacheKey(raw, bal, img.Caps{WebP: true}, img.Hints{}, 80),
 	} {
 		assert.NotEqual(t, base, other, name)
 	}
@@ -129,7 +131,7 @@ func TestBudgetFallsBackAndFinishesInTheBackground(t *testing.T) {
 	assert.Equal(t, PassTimeout, out.Reason, "the client is not kept waiting")
 	assert.Equal(t, jpg, rec.Body.Bytes(), "and gets the original")
 
-	key := imageKey(jpg, p.live.Load().profiles[img.ProfileBalanced], img.CapsFromAccept(acc), img.Hints{}, 0)
+	key := p.imageCacheKey(jpg, p.live.Load().profiles[img.ProfileBalanced], img.CapsFromAccept(acc), img.Hints{}, 0)
 	require.Eventually(t, func() bool { _, ok := p.cache.Get(key); return ok }, 2*time.Minute, 100*time.Millisecond)
 
 	rec, out = run(p, newReq("Accept", acc), newResp("image/jpeg", jpg))
@@ -177,7 +179,7 @@ func TestMinifyModes(t *testing.T) {
 	src := []byte("<!DOCTYPE html>\n<html>\n  <body>\n" + strings.Repeat("    <p>   hello    world   </p>\n\n", 100) +
 		"    <script>\n      var   a  =  1;\n      var b   =   2;\n    </script>\n  </body>\n</html>\n")
 	safe := textmin.Config{HTML: textmin.Safe, CSS: textmin.Safe, JS: textmin.Off, SVG: textmin.Safe, JSON: textmin.Safe}
-	p := newPipeline(func(c *Config) { c.Text.Minify = safe })
+	p := newPipeline(func(c *Config) { c.Text.Minify = safe; c.Text.AllowIntegrityChanges = true })
 	rec, out := run(p, newReq("Accept-Encoding", "identity"), newResp("text/html", src))
 	require.Equal(t, Transformed, out.Reason)
 	assert.Contains(t, rec.Body.String(), "var   a  =  1;", "JavaScript stays as it was when js is off")

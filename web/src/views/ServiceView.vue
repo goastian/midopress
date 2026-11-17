@@ -189,6 +189,19 @@ async function copyConfig() {
       <div v-else class="skeleton" role="status" aria-label="Loading"><i /><i /><i /></div>
     </section>
 
+    <section v-if="about?.runtime_components?.length" class="sec">
+      <div class="sec-head"><h2>Runtime components</h2></div>
+      <dl class="dl">
+        <template v-for="component in about.runtime_components" :key="component.id">
+          <dt>{{ component.name }}</dt>
+          <dd><span class="mono">{{ component.version }}</span> · {{ component.execution }} · {{ component.status }}
+            <div class="hint">{{ component.source }}</div>
+            <div v-if="component.sha256" class="hint mono component-hash">SHA256 {{ component.sha256 }}</div>
+          </dd>
+        </template>
+      </dl>
+    </section>
+
     <section class="sec">
       <div class="sec-head"><h2>Actions</h2></div>
       <ul class="acts">
@@ -304,6 +317,9 @@ async function copyConfig() {
 </template>
 
 <style scoped>
+.component-hash {
+  overflow-wrap: anywhere;
+}
 .codec {
   margin-right: 0.9rem;
   color: var(--ink-2);

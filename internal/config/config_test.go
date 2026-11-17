@@ -234,7 +234,8 @@ func TestExampleFileMatchesDefaults(t *testing.T) {
 
 func TestNewPipelineKeysAndTheirDefaults(t *testing.T) {
 	d := Default()
-	assert.Equal(t, "profile", d.Pipeline.NoTransform, "what the profile says")
+	assert.Equal(t, "respect", d.Pipeline.NoTransform, "profile selection cannot opt out of no-transform")
+	assert.False(t, d.Pipeline.Text.AllowIntegrityChanges)
 	assert.True(t, d.Pipeline.Image.Modern)
 	assert.True(t, d.Pipeline.Image.PageHints)
 	assert.InDelta(t, 2, d.Pipeline.Image.HintDPR, 0)

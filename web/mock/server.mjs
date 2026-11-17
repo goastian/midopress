@@ -232,11 +232,23 @@ export function startServer({
   route('PATCH', '/devices/:id', ({ params, body }) => {
     const d = sim.devices.get(params.id)
     if (!d) throw notFound(`no device "${params.id}"`)
-    if (!isObj(body) || typeof body.profile !== 'string') {
-      throw invalid([{ index: -1, field: 'profile', column: 0, message: 'profile is required (empty for the default)' }])
+    if (!isObj(body) || !Object.hasOwn(body, 'profile') && !Object.hasOwn(body, 'quotas')) {
+      throw invalid([{ index: -1, field: 'profile', column: 0, message: 'profile or quotas is required' }])
     }
-    checkDeviceProfile(body.profile)
-    d.profile = body.profile
+    if (Object.hasOwn(body, 'profile')) {
+      if (typeof body.profile !== 'string') throw invalid([{ index: -1, field: 'profile', column: 0, message: 'profile must be a string' }])
+      checkDeviceProfile(body.profile)
+    }
+    if (Object.hasOwn(body, 'quotas')) {
+      const q = body.quotas
+      if (q !== null && (!isObj(q) || Object.keys(q).some((k) => !['requests', 'bytes', 'concurrency'].includes(k)) ||
+          !['requests', 'bytes', 'concurrency'].every((k) => Number.isSafeInteger(q[k]) && q[k] >= 0) || q.concurrency > 10000)) {
+        throw invalid([{ index: -1, field: 'quotas', column: 0, message: 'use nonnegative whole requests, bytes and concurrency; zero means unlimited' }])
+      }
+      if (q === null) delete d.quotas
+      else d.quotas = { ...q }
+    }
+    if (Object.hasOwn(body, 'profile')) d.profile = body.profile
     return [200, sim.deviceView(d)]
   })
   route('DELETE', '/devices/:id', ({ params }) => {

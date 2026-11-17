@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goastian/midopress/internal/lru"
+	"github.com/goastian/midopress/internal/quota"
 )
 
 type Mode string
@@ -63,6 +64,7 @@ type deviceEntry struct {
 	id      string
 	hash    digest
 	profile string
+	quotas  *quota.Limits
 }
 
 // snapshot is an immutable view of the devices file.
@@ -93,8 +95,9 @@ type Authenticator struct {
 	window      time.Duration
 	now         func() time.Time
 
-	failures *lru.Cache[netip.Addr, *failureEntry]
-	devices  atomic.Pointer[snapshot]
+	failures    *lru.Cache[netip.Addr, *failureEntry]
+	devices     atomic.Pointer[snapshot]
+	adminDigest atomic.Pointer[digest]
 
 	devicesFile string
 	reloadMu    sync.Mutex
@@ -229,7 +232,7 @@ func (a *Authenticator) Reload() error {
 		if err != nil {
 			return err
 		}
-		e := &deviceEntry{id: d.ID, hash: h, profile: d.Profile}
+		e := &deviceEntry{id: d.ID, hash: h, profile: d.Profile, quotas: d.Quotas}
 		snap.byID[d.ID] = e
 		snap.byToken[h] = e
 	}
@@ -331,6 +334,9 @@ func (a *Authenticator) verify(header string) (string, bool) {
 		if !ok {
 			return "", false
 		}
+		if a.reserved(sha256.Sum256(pass)) {
+			return "", false
+		}
 		if a.mode == ModeBasic {
 			return a.verifyBasic(user, pass)
 		}
@@ -339,11 +345,40 @@ func (a *Authenticator) verify(header string) (string, bool) {
 		var tok [maxHeaderLen]byte
 		n := copy(tok[:], rest)
 		sum := sha256.Sum256(tok[:n])
+		if a.reserved(sum) {
+			return "", false
+		}
 		if e, ok := a.devices.Load().byToken[sum]; ok {
 			return e.id, true
 		}
 	}
 	return "", false
+}
+
+func (a *Authenticator) ReserveAdminToken(token string) {
+	h := sha256.Sum256([]byte(token))
+	a.adminDigest.Store(&h)
+}
+func (a *Authenticator) reserved(h digest) bool {
+	v := a.adminDigest.Load()
+	return v != nil && subtle.ConstantTimeCompare(v[:], h[:]) == 1
+}
+func (a *Authenticator) DeviceAllowed(id string) bool {
+	if a.mode != ModeToken {
+		return true
+	}
+	e, ok := a.devices.Load().byID[id]
+	return ok && !a.reserved(e.hash)
+}
+func (a *Authenticator) DeviceQuotas(id string) *quota.Limits {
+	if a.mode != ModeToken {
+		return nil
+	}
+	if e, ok := a.devices.Load().byID[id]; ok && e.quotas != nil {
+		copy := *e.quotas
+		return &copy
+	}
+	return nil
 }
 
 func decodeBasic(encoded string, dst []byte) (user, pass []byte, ok bool) {

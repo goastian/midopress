@@ -9,13 +9,15 @@ import (
 	"time"
 
 	"github.com/goastian/midopress/internal/httpx"
+	"github.com/goastian/midopress/internal/pipeline"
+	"github.com/goastian/midopress/internal/quota"
 )
 
 const upgradeHandshakeTimeout = 30 * time.Second
 
 // upgrade relays a request that asks to switch protocols, typically a
 // WebSocket handshake, and then the bytes of the new protocol.
-func (p *Proxy) upgrade(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) upgrade(w http.ResponseWriter, r *http.Request, lease *quota.Lease) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		p.writeError(w, http.StatusNotImplemented)
@@ -57,7 +59,7 @@ func (p *Proxy) upgrade(w http.ResponseWriter, r *http.Request) {
 	_ = up.SetDeadline(time.Now().Add(upgradeHandshakeTimeout))
 	if err := r.Write(up); err != nil {
 		_ = up.Close()
-		p.upstreamError(w, r, err)
+		p.upstreamError(w, r, requestQuotaError(r, err))
 		return
 	}
 	br := bufio.NewReader(up)
@@ -76,7 +78,13 @@ func (p *Proxy) upgrade(w http.ResponseWriter, r *http.Request) {
 		httpx.RemoveHopByHop(resp.Header)
 		httpx.CopyHeader(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		var writer io.Writer = w
+		if lease != nil && !transportMetered(r.Context()) {
+			writer = &quotaWriter{ResponseWriter: w, lease: lease}
+		}
+		if _, err := io.Copy(writer, resp.Body); err != nil {
+			panic(http.ErrAbortHandler)
+		}
 		return
 	}
 
@@ -108,6 +116,9 @@ func (p *Proxy) upgrade(w http.ResponseWriter, r *http.Request) {
 	upConn := up
 	if br.Buffered() > 0 {
 		upConn = &prefixConn{Conn: up, r: br}
+	}
+	if !transportMetered(r.Context()) {
+		clientConn = p.meterConnection(clientConn, lease, pipeline.ClientFrom(r.Context()).Device)
 	}
 	p.tunnels.tunnel(clientConn, upConn)
 }

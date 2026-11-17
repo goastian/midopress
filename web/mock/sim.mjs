@@ -525,6 +525,7 @@ export class Sim {
       id: d.id, profile: d.profile, created: iso(d.created), last_seen: d.last_seen ? iso(d.last_seen) : null,
       active: Boolean(d.last_seen) && now - d.last_seen < 120000, requests: d.requests, bytes_in: d.bytes_in,
       bytes_out: d.bytes_out, saved: d.bytes_in - d.bytes_out,
+      ...(d.quotas ? { quotas: { ...d.quotas } } : {}),
     }
   }
 

@@ -22,14 +22,15 @@ type live struct {
 	profiles map[string]*img.Profile
 	// texts holds two codecs per profile: for responses that change on every
 	// request, and for those that look cacheable and can afford a slow level.
-	texts  map[string][2]*codec.Text
-	levels map[string][2]codec.Levels
-	minify textmin.Config
-	min    *textmin.Minifier
-	rules  *rules.RuleSet
-	ttl    TTLConfig
+	texts                 map[string][2]*codec.Text
+	levels                map[string][2]codec.Levels
+	minify                textmin.Config
+	min                   *textmin.Minifier
+	rules                 *rules.RuleSet
+	ttl                   TTLConfig
+	allowIntegrityChanges bool
 	// noTransform is what the configuration says about Cache-Control:
-	// no-transform; empty leaves it to each profile.
+	// no-transform; an empty value means the explicitly chosen legacy profile mode.
 	noTransform string
 
 	mins sync.Map // textmin.Config -> *textmin.Minifier, for rules that change it
@@ -44,17 +45,21 @@ func newLive(cfg *Config) (*live, error) {
 		return nil, fmt.Errorf("pipeline: unknown profile %q", cfg.Profile)
 	}
 	lv := &live{
-		profile:  cfg.Profile,
-		profiles: profiles,
-		texts:    make(map[string][2]*codec.Text, len(profiles)),
-		levels:   make(map[string][2]codec.Levels, len(profiles)),
-		minify:   cfg.Text.Minify,
-		min:      textmin.New(cfg.Text.Minify),
-		rules:    cfg.Rules,
-		ttl:      cfg.TTL,
+		profile:               cfg.Profile,
+		profiles:              profiles,
+		texts:                 make(map[string][2]*codec.Text, len(profiles)),
+		levels:                make(map[string][2]codec.Levels, len(profiles)),
+		minify:                cfg.Text.Minify,
+		min:                   textmin.New(cfg.Text.Minify),
+		rules:                 cfg.Rules,
+		ttl:                   cfg.TTL,
+		allowIntegrityChanges: cfg.Text.AllowIntegrityChanges,
 	}
 	if cfg.NoTransform != "profile" {
 		lv.noTransform = cfg.NoTransform
+		if lv.noTransform == "" {
+			lv.noTransform = img.NoTransformRespect
+		}
 	}
 	for name, prof := range profiles {
 		l := codec.Levels{Brotli: prof.Text.Brotli, Gzip: prof.Text.Gzip, Zstd: prof.Text.Zstd}
@@ -154,10 +159,11 @@ func profileRank(name string) int {
 
 // flow is what is decided about one response before it is transformed.
 type flow struct {
-	lv     *live
-	client Client
-	prof   *img.Profile
-	opts   options
+	lv      *live
+	client  Client
+	prof    *img.Profile
+	opts    options
+	private bool
 }
 
 // options are the settings a rule can change for one response.
@@ -188,6 +194,7 @@ func (f *flow) mayIgnoreNoTransform(k kind) bool {
 func (lv *live) newFlow(req *http.Request, dec rules.Decision) (*flow, error) {
 	cl := ClientFrom(req.Context())
 	f := &flow{lv: lv, client: cl, prof: lv.pick(cl, req.Header, dec.Profile)}
+	f.private = !sharedCacheAllowed(req, nil)
 	f.opts = options{minify: lv.minify, images: true, text: true, noTransform: f.prof.NoTransform}
 	if f.prof.MinifyJS && f.opts.minify.JS == textmin.Off {
 		f.opts.minify.JS = textmin.Safe
@@ -265,6 +272,10 @@ func (lv *live) newFlow(req *http.Request, dec rules.Decision) (*flow, error) {
 	}
 	if len(errs) > 0 {
 		return f, fmt.Errorf("pipeline: rule set has invalid keys or values: %v", errs)
+	}
+	if !lv.allowIntegrityChanges {
+		f.opts.minify.CSS = textmin.Off
+		f.opts.minify.JS = textmin.Off
 	}
 	return f, nil
 }

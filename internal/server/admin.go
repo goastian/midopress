@@ -131,11 +131,13 @@ func (s *Server) newAdmin() error {
 		return fmt.Errorf("admin token: %w", err)
 	}
 	s.adminTok, s.tokenNew = token, created
+	s.auth.ReserveAdminToken(token)
 
 	d := admin.Deps{
 		Version: s.version, Started: s.started, Token: token, Pipeline: s.pipe, Proxy: s.proxy,
 		Collector: s.collector, Flows: s.flows, Logs: s.logs, Level: s.level, Registry: s.registry,
 		Backend: s.pipe.Engine().Backend(), Auth: s.auth, CA: s.ca, Images: s.images,
+		Quotas:    s.quotas,
 		Config:    func() *config.Config { return s.current.Load() },
 		Overrides: func() (*config.Overrides, error) { return config.LoadOverrides(s.current.Load().Web.UIPath()) },
 		Save:      s.saveOverrides,
