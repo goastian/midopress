@@ -18,10 +18,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goastian/midopress/internal/img"
-	"github.com/goastian/midopress/internal/upstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/testutil"
+	"github.com/goastian/midopress/internal/upstream"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -40,7 +42,9 @@ func service(t *testing.T) *Service {
 	s, err := New(Options{Key: bytes.Repeat([]byte{42}, 32), PublicURL: "https://images.example.com",
 		MaxBytes: 1 << 20, MaxPixels: 100_000, MaxWidth: 4096, MaxDPR: 3, Concurrency: 1,
 		Timeout: time.Second, SignatureTTL: time.Minute, CacheTTL: time.Minute, Backend: "wasm",
-		Profiles: img.Profiles, Transform: Process(os.Args[0])})
+		Profiles: img.Profiles, Transform: func(_ context.Context, j Job) (*Output, error) {
+			return &Output{Data: j.Raw, Format: img.Sniff(j.Raw), Decision: "original", Backend: "go"}, nil
+		}})
 	require.NoError(t, err)
 	raw := fixture(t)
 	s.transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -86,6 +90,28 @@ func TestSignaturesProtectEveryParameterAndCache(t *testing.T) {
 	assert.Equal(t, 403, perform(s, u+"&bad=%zz").Code)
 	s.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
 	assert.Equal(t, 403, perform(s, u).Code)
+}
+
+func TestProcessResponsesAreCachedOnlyAfterSuccess(t *testing.T) {
+	s := service(t)
+	s.o.Timeout = 20 * time.Second
+	s.o.Transform = Process(os.Args[0])
+	u := signed(t, s, "original")
+	for _, cache := range []string{"miss", "hit"} {
+		w := perform(s, u)
+		if testutil.SandboxSupported() {
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, cache, w.Header().Get("X-MidoPress-Cache"))
+			assert.Equal(t, fixture(t), w.Body.Bytes())
+		} else {
+			assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+			assert.Zero(t, s.cache.Len())
+		}
+	}
+	s.ClearCache()
+	s.o.Transform = Process(filepath.Join(t.TempDir(), "missing-worker"))
+	assert.Equal(t, http.StatusUnprocessableEntity, perform(s, u).Code)
+	assert.Zero(t, s.cache.Len())
 }
 
 func TestDestinationsAndLimitsCannotBeSigned(t *testing.T) {
@@ -232,6 +258,11 @@ func TestWorkerLimitsAndCancellation(t *testing.T) {
 	assert.Error(t, checkPixels(raw, img.PNG, 767))
 	assert.Error(t, checkPixels([]byte("<svg/>"), img.Unknown, 1000))
 	result, err := Process(os.Args[0])(context.Background(), Job{Raw: raw, Request: Request{Mode: "original"}, Backend: "wasm", MaxPixels: 1000})
+	if !testutil.SandboxSupported() {
+		require.Error(t, err)
+		assert.Nil(t, result)
+		return
+	}
 	require.NoError(t, err)
 	assert.Equal(t, raw, result.Data)
 	if os.PathSeparator == '/' {

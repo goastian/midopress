@@ -5,10 +5,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/goastian/midopress/internal/img"
-	"github.com/goastian/midopress/internal/quality"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/quality"
 )
 
 func assertServedImagePolicy(t *testing.T, original, result []byte, profileName string) {

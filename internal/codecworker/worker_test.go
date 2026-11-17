@@ -15,11 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/textmin"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestMain(m *testing.M) {

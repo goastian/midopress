@@ -62,7 +62,8 @@ func TestSandboxHelper(t *testing.T) {
 	_, readErr := unix.Read(secretFD, secretByte[:])
 	checks["inherited_file_closed"] = errors.Is(readErr, unix.EBADF)
 	close(start)
-	checks["existing_threads"] = <-results && <-results
+	first, second := <-results, <-results
+	checks["existing_threads"] = first && second
 	fd, e := unix.Open("/codec-secret", unix.O_RDONLY, 0)
 	checks["read_file"] = errors.Is(e, unix.EPERM)
 	if fd >= 0 {

@@ -72,7 +72,7 @@ func (e *Engine) optimizeAnimation(ctx context.Context, in Input, g *stdgif.GIF)
 	if pixels <= 0 || pixels > maxAnimationPixels {
 		return nil, ErrBudget
 	}
-	if !(in.Caps.WebP && e.be.Supports(WebP)) && !(in.Caps.JXL && e.be.Supports(JXL)) {
+	if (!in.Caps.WebP || !e.be.Supports(WebP)) && (!in.Caps.JXL || !e.be.Supports(JXL)) {
 		return nil, ErrUnsupported
 	}
 	return e.optimizeFrames(ctx, in, &Animation{

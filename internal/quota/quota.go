@@ -111,7 +111,7 @@ func (l *Ledger) persist() error {
 		return ErrUnavailable
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if err = f.Chmod(0600); err == nil {
 		_, err = f.Write(data)
 	}
@@ -123,17 +123,9 @@ func (l *Ledger) persist() error {
 		err = closeErr
 	}
 	if err == nil {
-		err = os.Rename(name, l.path)
+		err = replaceFile(name, l.path)
 	}
 	if err != nil {
-		return ErrUnavailable
-	}
-	dir, err := os.Open(filepath.Dir(l.path))
-	if err != nil {
-		return ErrUnavailable
-	}
-	defer dir.Close()
-	if dir.Sync() != nil {
 		return ErrUnavailable
 	}
 	return nil

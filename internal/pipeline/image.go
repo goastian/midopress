@@ -423,10 +423,14 @@ func (p *Pipeline) runCPU(in img.Input) (res *img.Result, err error) {
 			res, err = nil, fmt.Errorf("pipeline: codec panic: %v", r)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.Image.Timeout)
+	deadline := time.Now().Add(p.cfg.Image.Timeout)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
+	if time.Until(deadline) <= 0 {
+		return nil, errTimeout
+	}
 	res, err = p.optimize(ctx, in)
-	if err == nil && ctx.Err() != nil {
+	if err == nil && (ctx.Err() != nil || time.Until(deadline) <= 0) {
 		if res == nil {
 			return nil, errTimeout
 		}

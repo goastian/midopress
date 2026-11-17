@@ -86,6 +86,7 @@ func TestForwardsPlainResponses(t *testing.T) {
 }
 
 func TestTextCompressionThroughProxy(t *testing.T) {
+	requireTransforms(t)
 	h := newHarness(t)
 	c := h.client()
 	f := fix()
@@ -179,6 +180,7 @@ func TestTextCompressionThroughProxy(t *testing.T) {
 }
 
 func TestImagesThroughProxy(t *testing.T) {
+	requireTransforms(t)
 	h := newHarness(t)
 	c := h.client()
 	f := fix()
@@ -447,6 +449,7 @@ func TestLocalPages(t *testing.T) {
 }
 
 func TestEveryOriginEncoding(t *testing.T) {
+	requireTransforms(t)
 	h := newHarness(t)
 	c := h.client()
 	f := fix()

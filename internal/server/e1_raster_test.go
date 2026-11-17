@@ -6,9 +6,10 @@ import (
 	"image/png"
 	"testing"
 
-	"github.com/goastian/midopress/internal/img"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/img"
 )
 
 // This validator checks decoded canvases, not color transforms. It must accept

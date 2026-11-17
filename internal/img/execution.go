@@ -12,12 +12,12 @@ func RuntimeInfo(be Backend) map[string]CodecRuntime {
 		path := ExecutionPath(be, f)
 		info := CodecRuntime{Encoder: path, Decoder: path}
 		if be.Name() == "wasm" {
-			switch {
-			case path == "native":
+			switch path {
+			case "native":
 				info.Reason = "codec package loaded a shared library; executes native code in the calling process"
-			case path == "wasm":
+			case "wasm":
 				info.Reason = "embedded WebAssembly codec; no native codec selected"
-			case path == "go-wasm2go":
+			case "go-wasm2go":
 				info.Reason = "codec WebAssembly was translated to Go at build time; executes generated Go code, not a WASM sandbox"
 			default:
 				info.Reason = "Go implementation"

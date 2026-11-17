@@ -72,7 +72,7 @@ func binaryCacheIdentity() string {
 			var file *os.File
 			file, err = os.Open(name)
 			if err == nil {
-				defer file.Close()
+				defer func() { _ = file.Close() }()
 				h := sha256.New()
 				if _, err = io.Copy(h, file); err == nil {
 					executableIdentity.value = hex.EncodeToString(h.Sum(nil))

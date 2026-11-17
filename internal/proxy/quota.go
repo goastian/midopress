@@ -74,12 +74,12 @@ func (q *quotaReader) Read(b []byte) (int, error) {
 		res, e := q.lease.Reserve(n)
 		if e != nil {
 			q.failure.Store(&quotaReadFailure{e})
-			_ = q.ReadCloser.Close()
+			_ = q.Close()
 			return 0, e
 		}
 		if res.Size < n {
 			q.failure.Store(&quotaReadFailure{quota.ErrBytes})
-			_ = q.ReadCloser.Close()
+			_ = q.Close()
 			return res.Size, quota.ErrBytes
 		}
 	}

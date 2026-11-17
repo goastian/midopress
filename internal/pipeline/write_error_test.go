@@ -7,11 +7,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/xcache"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 type partialResponseWriter struct {

@@ -84,7 +84,7 @@ func prepare() {
 			engine.err = err
 			return
 		}
-		defer z.Close()
+		defer func() { _ = z.Close() }()
 		code, err := io.ReadAll(io.LimitReader(z, 32<<20))
 		if err != nil {
 			engine.err = err
@@ -120,7 +120,7 @@ func newInstance() (*instance, error) {
 	return &instance{ctx: ctx, cancel: cancel, mod: m}, nil
 }
 
-func (i *instance) close() { i.mod.Close(i.ctx); i.cancel() }
+func (i *instance) close() { _ = i.mod.Close(i.ctx); i.cancel() }
 
 func (i *instance) alloc(data []byte, length int) (uint32, error) {
 	if length < len(data) {

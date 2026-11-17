@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"software.sslmate.com/src/go-pkcs12"
+
+	"github.com/goastian/midopress/internal/testutil"
 )
 
 func exec(t *testing.T, args ...string) (code int, stdout, stderr string) {
@@ -117,7 +119,7 @@ func TestCA(t *testing.T) {
 
 	fi, err := os.Stat(filepath.Join(dir, "ca.key"))
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm(), "the private key must not be readable by others")
+	testutil.AssertFileMode(t, os.FileMode(0o600), fi.Mode().Perm())
 
 	t.Run("it never overwrites an existing authority", func(t *testing.T) {
 		before, _ := os.ReadFile(filepath.Join(dir, "ca.crt"))

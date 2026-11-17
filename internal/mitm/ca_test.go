@@ -14,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/testutil"
 )
 
 func TestGenerateCA(t *testing.T) {
@@ -56,9 +58,9 @@ func TestWriteFilesAndLoadRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	di, err := os.Stat(dir)
 	require.NoError(t, err)
-	assert.Equal(t, fs.FileMode(0o644), ci.Mode().Perm())
-	assert.Equal(t, fs.FileMode(0o600), ki.Mode().Perm())
-	assert.Equal(t, fs.FileMode(0o700), di.Mode().Perm())
+	testutil.AssertFileMode(t, fs.FileMode(0o644), ci.Mode().Perm())
+	testutil.AssertFileMode(t, fs.FileMode(0o600), ki.Mode().Perm())
+	testutil.AssertFileMode(t, fs.FileMode(0o700), di.Mode().Perm())
 
 	loaded, err := LoadCA(certPath, keyPath)
 	require.NoError(t, err)

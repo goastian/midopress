@@ -9,9 +9,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/goastian/midopress/internal/quota"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/quota"
 )
 
 func TestRegistrationCapIsAtomicAcrossStoreHandles(t *testing.T) {

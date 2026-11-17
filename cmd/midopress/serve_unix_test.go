@@ -16,6 +16,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/testutil"
 )
 
 // syncBuffer lets the test read the log while the server writes to it.
@@ -94,8 +96,13 @@ func TestServe(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
-	assert.Less(t, len(body), 2000)
+	if testutil.SandboxSupported() {
+		assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
+		assert.Less(t, len(body), 2000)
+	} else {
+		assert.Empty(t, resp.Header.Get("Content-Encoding"))
+		assert.GreaterOrEqual(t, len(body), 2000)
+	}
 
 	require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGINT))
 	select {

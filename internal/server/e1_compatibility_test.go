@@ -15,10 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goastian/midopress/internal/mitm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/websocket"
+
+	"github.com/goastian/midopress/internal/mitm"
 )
 
 func TestE1CompatibilityMatrix(t *testing.T) {
@@ -112,7 +113,7 @@ func TestE1CompatibilityMatrix(t *testing.T) {
 		req.Header.Set("Accept-Encoding", "gzip, br")
 		resp, err := h.client().Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		first := make([]byte, len("data: first\n\n"))
 		_, err = io.ReadFull(resp.Body, first)
 		require.NoError(t, err)

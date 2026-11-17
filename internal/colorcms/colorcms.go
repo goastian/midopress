@@ -51,7 +51,7 @@ func RGBProfile(ctx context.Context, chroma [8]float64, transfer int, gamma floa
 	if err != nil {
 		return nil, err
 	}
-	defer m.Close(context.Background())
+	defer func() { _ = m.Close(context.Background()) }()
 	r, err := m.ExportedFunction("malloc").Call(ctx, 64+65536)
 	if err != nil || len(r) != 1 || r[0] == 0 {
 		return nil, errors.New("colorcms: profile memory")
@@ -110,7 +110,7 @@ func ToSRGB(ctx context.Context, src image.Image, profile []byte) (image.Image, 
 	if err != nil {
 		return nil, err
 	}
-	defer m.Close(context.Background())
+	defer func() { _ = m.Close(context.Background()) }()
 	alloc := func(size int) (uint32, error) {
 		r, err := m.ExportedFunction("malloc").Call(ctx, uint64(size))
 		if err != nil || len(r) != 1 || r[0] == 0 {

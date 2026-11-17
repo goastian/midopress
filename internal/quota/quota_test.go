@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/testutil"
 )
 
 func TestDurableQuotasSurviveRestartAndSeparateDevices(t *testing.T) {
@@ -54,7 +56,7 @@ func TestDurableQuotasSurviveRestartAndSeparateDevices(t *testing.T) {
 	assert.Zero(t, l.View("b").Bytes)
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
+	testutil.AssertFileMode(t, os.FileMode(0600), info.Mode().Perm())
 }
 
 func TestConcurrentRequestsCannotOverspendQuota(t *testing.T) {

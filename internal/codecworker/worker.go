@@ -151,7 +151,7 @@ func Call(ctx context.Context, executable string, req Request) (*Response, error
 	}
 	cmd := exec.CommandContext(ctx, executable, "codec-worker")
 	cmd.Stdin = bytes.NewReader(input)
-	cmd.Env = []string{"GOMAXPROCS=2", "GOMEMLIMIT=384MiB", "TZ=UTC"}
+	cmd.Env = []string{"GOMAXPROCS=2", "GOMEMLIMIT=384MiB", "GORACE=atexit_sleep_ms=0", "TZ=UTC"}
 	for _, k := range []string{"LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "SystemRoot"} {
 		if v, ok := os.LookupEnv(k); ok {
 			cmd.Env = append(cmd.Env, k+"="+v)

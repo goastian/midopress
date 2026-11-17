@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"github.com/goastian/midopress/internal/img"
-	"github.com/goastian/midopress/internal/imgmeta"
 	"image"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+
+	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/imgmeta"
 )
 
 func Dimensions(raw []byte, f img.Format) (int, int, error) {

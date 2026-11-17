@@ -45,6 +45,7 @@ import (
 	"github.com/goastian/midopress/internal/config"
 	"github.com/goastian/midopress/internal/mitm"
 	"github.com/goastian/midopress/internal/server"
+	"github.com/goastian/midopress/internal/testutil"
 	"github.com/goastian/midopress/internal/upstream"
 )
 
@@ -603,6 +604,18 @@ func (h *harness) originMux() http.Handler {
 }
 
 type configT = config.Config
+
+func requireTransforms(t testing.TB) {
+	t.Helper()
+	testutil.RequireSandbox(t)
+}
+
+func wantEncoding(encoding string) string {
+	if !testutil.SandboxSupported() {
+		return ""
+	}
+	return encoding
+}
 
 // rawConn opens a plain TCP connection to the proxy, closed when the test ends.
 func (h *harness) rawConn() net.Conn {

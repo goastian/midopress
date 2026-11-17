@@ -376,16 +376,8 @@ func (p *Pipeline) compress(fl *flow, target codec.Encoding, plain []byte, stati
 	return append([]byte(nil), comp.Bytes()...), nil
 }
 
-// convertFont turns a TTF, OTF or WOFF font into WOFF2, or returns nil when it
+// convertFontFor turns a TTF, OTF or WOFF font into WOFF2, or returns nil when it
 // can not be done safely. Results are kept by content.
-func (p *Pipeline) convertFont(plain []byte, h http.Header) *xcache.Entry {
-	return p.convertFontContext(p.bg.ctx, plain, h)
-}
-
-func (p *Pipeline) convertFontContext(ctx context.Context, plain []byte, h http.Header) *xcache.Entry {
-	return p.convertFontFor(ctx, plain, h, sharedCacheAllowed(nil, h))
-}
-
 func (p *Pipeline) convertFontFor(ctx context.Context, plain []byte, h http.Header, shared bool) *xcache.Entry {
 	shared = shared && sharedCacheAllowed(nil, h)
 	key := p.variantKey("font", nil, plain)

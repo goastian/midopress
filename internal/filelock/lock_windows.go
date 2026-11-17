@@ -3,8 +3,9 @@
 package filelock
 
 import (
-	"golang.org/x/sys/windows"
 	"os"
+
+	"golang.org/x/sys/windows"
 )
 
 func Acquire(path string, nonblocking bool) (func(), error) {
@@ -18,7 +19,7 @@ func Acquire(path string, nonblocking bool) (func(), error) {
 	}
 	ov := new(windows.Overlapped)
 	if err := windows.LockFileEx(windows.Handle(f.Fd()), flags, 0, 1, 0, ov); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return func() { _ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ov); _ = f.Close() }, nil

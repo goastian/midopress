@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goastian/midopress/internal/imgmeta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/imgmeta"
 )
 
 func encodeModern(t testing.TB, f Format, w, h, q int) []byte {

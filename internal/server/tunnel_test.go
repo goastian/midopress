@@ -16,6 +16,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/testutil"
 )
 
 // echoServer accepts connections and upper-cases what it receives. When the
@@ -115,7 +117,7 @@ func TestMITM(t *testing.T) {
 	t.Run("compresses HTTPS and presents a certificate from our CA", func(t *testing.T) {
 		h := newHarness(t)
 		resp, body := h.get(h.client(), h.secureURL("/html"), "Accept-Encoding", "gzip, br")
-		assert.Equal(t, "br", resp.Header.Get("Content-Encoding"))
+		assert.Equal(t, wantEncoding("br"), resp.Header.Get("Content-Encoding"))
 		assert.Equal(t, f.html, decoded(t, resp, body))
 
 		require.NotNil(t, resp.TLS)
@@ -141,7 +143,11 @@ func TestMITM(t *testing.T) {
 		c := h.client()
 		resp, body := h.get(c, h.secureURL("/image/jpeg"))
 		assert.Equal(t, "image/jpeg", resp.Header.Get("Content-Type"))
-		assert.Less(t, len(body), len(f.jpeg))
+		if testutil.SandboxSupported() {
+			assert.Less(t, len(body), len(f.jpeg))
+		} else {
+			assert.Equal(t, f.jpeg, body)
+		}
 
 		payload := strings.Repeat("secure request body ", 4000)
 		resp, body = h.do(c, http.MethodPost, h.secureURL("/echo"), strings.NewReader(payload), "Content-Type", "application/x-test")
@@ -181,7 +187,7 @@ func TestMITM(t *testing.T) {
 		// HTTP/2 to the proxy: a plain request arrives with the target in :authority
 		resp, body := h.get(h.client(), h.plainURL("/html"), "Accept-Encoding", "gzip")
 		assert.Equal(t, 2, resp.ProtoMajor)
-		assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
+		assert.Equal(t, wantEncoding("gzip"), resp.Header.Get("Content-Encoding"))
 		assert.Equal(t, f.html, decoded(t, resp, body))
 
 		// Go's client speaks HTTP/1.1 for CONNECT even when ALPN says h2, so
@@ -191,7 +197,7 @@ func TestMITM(t *testing.T) {
 			tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
 		})
 		resp, body = h.get(c, h.secureURL("/html"), "Accept-Encoding", "br")
-		assert.Equal(t, "br", resp.Header.Get("Content-Encoding"))
+		assert.Equal(t, wantEncoding("br"), resp.Header.Get("Content-Encoding"))
 		assert.Equal(t, f.html, decoded(t, resp, body))
 	})
 }
@@ -368,7 +374,7 @@ func TestConnectOverHTTP2(t *testing.T) {
 		require.NoError(t, err)
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
-		assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
+		assert.Equal(t, wantEncoding("gzip"), resp.Header.Get("Content-Encoding"))
 		assert.Equal(t, fix().html, decoded(t, resp, body))
 	})
 }

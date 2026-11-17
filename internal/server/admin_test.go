@@ -22,6 +22,7 @@ import (
 	"github.com/goastian/midopress/internal/auth"
 	"github.com/goastian/midopress/internal/config"
 	"github.com/goastian/midopress/internal/server"
+	"github.com/goastian/midopress/internal/testutil"
 )
 
 // adminAPI talks to the administration server of a harness.
@@ -135,7 +136,7 @@ func TestAdminTokenIsKeptAndPrivate(t *testing.T) {
 	path := h.cfg.Web.TokenPath()
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	testutil.AssertFileMode(t, os.FileMode(0o600), info.Mode().Perm())
 	raw, _ := os.ReadFile(path)
 	assert.Equal(t, token, strings.TrimSpace(string(raw)))
 }
@@ -146,6 +147,7 @@ func TestAdminOffByConfiguration(t *testing.T) {
 }
 
 func TestStatsFollowTheTraffic(t *testing.T) {
+	requireTransforms(t)
 	h := newHarness(t, withAdmin())
 	a := h.admin(t)
 	c := h.client()
@@ -210,6 +212,7 @@ func TestStatsFollowTheTraffic(t *testing.T) {
 }
 
 func TestFlowsAreOffUntilAskedForAndKeepNoSecrets(t *testing.T) {
+	requireTransforms(t)
 	h := newHarness(t, withAdmin())
 	a := h.admin(t)
 	c := h.client()
@@ -467,7 +470,11 @@ func TestConfigChangesApplyAtOnceAndAreSaved(t *testing.T) {
 		assert.Empty(t, view.Rules)
 		assert.False(t, view.ManagedByUI.Rules)
 		_, body := h.get(c, h.plainURL("/image/jpeg"))
-		assert.Less(t, len(body), len(f.jpeg))
+		if testutil.SandboxSupported() {
+			assert.Less(t, len(body), len(f.jpeg))
+		} else {
+			assert.Equal(t, f.jpeg, body)
+		}
 	})
 }
 
@@ -783,7 +790,11 @@ func TestServiceCommands(t *testing.T) {
 	a := h.admin(t)
 	c := h.client()
 	h.get(c, h.plainURL("/image/jpeg"))
-	assert.Equal(t, 1, h.srv.CacheLen())
+	if testutil.SandboxSupported() {
+		assert.Equal(t, 1, h.srv.CacheLen())
+	} else {
+		assert.Zero(t, h.srv.CacheLen())
+	}
 
 	for _, p := range []string{"/api/v1/service/reload", "/api/v1/service/cache/clear", "/api/v1/service/stats/reset"} {
 		resp, _ := a.call("POST", p, nil)
@@ -932,6 +943,7 @@ func TestDiscoveryDocumentFromOneAddress(t *testing.T) {
 }
 
 func TestStatsSayWhyBytesWereNotSaved(t *testing.T) {
+	requireTransforms(t)
 	h := newHarness(t, withAdmin())
 	a := h.admin(t)
 	c := h.client()

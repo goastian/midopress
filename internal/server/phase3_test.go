@@ -27,6 +27,7 @@ func get(t *testing.T, url string) (*http.Response, string) {
 }
 
 func TestMetricsOnTheProxyPort(t *testing.T) {
+	requireTransforms(t)
 	h := newHarness(t)
 	h.get(h.client(), h.plainURL("/html"), "Accept-Encoding", "gzip")
 	h.get(h.client(), h.plainURL("/image/jpeg"))
@@ -73,6 +74,7 @@ func TestMetricsOnAListenerOfItsOwn(t *testing.T) {
 }
 
 func TestRulesLeaveImagesAlone(t *testing.T) {
+	requireTransforms(t)
 	f := fix()
 	h := newHarness(t, withConfig(func(c *config.Config) {
 		c.Rules = []rules.Rule{{Match: `~u /image/jpeg`, Action: rules.ActionPassthrough}}
@@ -97,6 +99,7 @@ func TestRulesPassthroughTLSStopsInterception(t *testing.T) {
 }
 
 func TestReloadAppliesRulesAndKeepsTheOldOnesOnError(t *testing.T) {
+	requireTransforms(t)
 	f := fix()
 	next := config.Default()
 	loader := func() (*config.Config, error) { return next, nil }

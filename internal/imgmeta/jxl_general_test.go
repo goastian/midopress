@@ -6,9 +6,10 @@ import (
 	"image/color"
 	"testing"
 
-	"github.com/goastian/midopress/internal/jxlcodec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/jxlcodec"
 )
 
 func TestParseGeneralJXLCodestreamAndFragmentedContainer(t *testing.T) {

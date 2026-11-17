@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/testutil"
 )
 
 func TestStoreAddRevokeList(t *testing.T) {
@@ -59,10 +61,10 @@ func TestStorePermissionsAndNoTempLeftovers(t *testing.T) {
 
 	fi, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
+	testutil.AssertFileMode(t, os.FileMode(0o600), fi.Mode().Perm())
 	di, err := os.Stat(dir)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o700), di.Mode().Perm())
+	testutil.AssertFileMode(t, os.FileMode(0o700), di.Mode().Perm())
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)

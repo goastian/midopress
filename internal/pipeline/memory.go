@@ -72,8 +72,8 @@ func (p *Pipeline) unreserve(n int64) {
 	if n <= 0 {
 		return
 	}
-	p.mem.Release(n)
 	p.memUsed.Add(-n)
+	p.mem.Release(n)
 }
 
 // reservation is what one response holds of the budget, which grows as the work

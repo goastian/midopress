@@ -3,10 +3,11 @@ package server_test
 import (
 	"testing"
 
-	"github.com/goastian/midopress/internal/config"
-	"github.com/goastian/midopress/internal/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/config"
+	"github.com/goastian/midopress/internal/server"
 )
 
 func TestE1ReloadRejectsUnappliedStaticOptions(t *testing.T) {

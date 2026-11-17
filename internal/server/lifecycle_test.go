@@ -65,7 +65,7 @@ func TestBasicAuthentication(t *testing.T) {
 		assert.Equal(t, http.StatusProxyAuthRequired, resp.StatusCode)
 
 		resp, body := h.get(h.viaUser("user", "pass"), h.secureURL("/html"), "Accept-Encoding", "gzip")
-		assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
+		assert.Equal(t, wantEncoding("gzip"), resp.Header.Get("Content-Encoding"))
 		assert.Equal(t, fix().html, decoded(t, resp, body))
 	})
 
@@ -257,13 +257,13 @@ func TestConcurrentTraffic(t *testing.T) {
 				switch (w + i) % 6 {
 				case 0:
 					resp, body, err := fetch(c, h.plainURL("/html"), "Accept-Encoding", "gzip, br")
-					check(err == nil && resp.Header.Get("Content-Encoding") == "br", "html: %v", err)
+					check(err == nil && resp.Header.Get("Content-Encoding") == wantEncoding("br"), "html: %v", err)
 					if err == nil {
 						check(bytes.Equal(decodeBody(t, resp, body), f.html), "html body differs")
 					}
 				case 1:
 					resp, body, err := fetch(c, h.secureURL("/html"), "Accept-Encoding", "gzip")
-					check(err == nil && resp.Header.Get("Content-Encoding") == "gzip", "secure html: %v", err)
+					check(err == nil && resp.Header.Get("Content-Encoding") == wantEncoding("gzip"), "secure html: %v", err)
 					if err == nil {
 						check(bytes.Equal(decodeBody(t, resp, body), f.html), "secure html body differs")
 					}

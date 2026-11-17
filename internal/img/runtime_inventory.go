@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/ebitengine/purego"
+
 	"github.com/goastian/midopress/internal/colorcms"
 	"github.com/goastian/midopress/internal/jxlcodec"
 )

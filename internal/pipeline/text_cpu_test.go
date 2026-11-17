@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goastian/midopress/internal/codec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/codec"
 )
 
 func TestInlineStaticBrotliDoesNotBypassOrWaitForAnOccupiedCPUSlot(t *testing.T) {

@@ -21,11 +21,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/imgmeta"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func e1WriteReport(t *testing.T, name string, report any) {

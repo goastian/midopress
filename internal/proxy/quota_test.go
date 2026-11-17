@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goastian/midopress/internal/quota"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/quota"
 )
 
 func quotaLease(t *testing.T, bytes uint64) (*quota.Ledger, *quota.Lease) {
@@ -40,10 +41,10 @@ func (c *readSignalConn) Read(b []byte) (int, error) {
 func TestQuotaPendingReadDoesNotConsumeDuplexBudget(t *testing.T) {
 	ledger, lease := quotaLease(t, 64)
 	server, client := net.Pipe()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	signal := &readSignalConn{Conn: server, started: make(chan struct{})}
 	conn := &quotaConn{Conn: signal, lease: lease, allowed: func() bool { return true }}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	done := make(chan struct{})
 	go func() { defer close(done); _, _ = conn.Read(make([]byte, 32<<10)) }()
 	<-signal.started
@@ -101,7 +102,7 @@ func TestQuotaReaderAndWriterAcceptOnlyRemainingBytes(t *testing.T) {
 func TestQuotaClosedOrRevokedTunnelCannotDeliverBytes(t *testing.T) {
 	ledger, lease := quotaLease(t, 64)
 	server, client := net.Pipe()
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	conn := &quotaConn{Conn: server, lease: lease, allowed: func() bool { return false }}
 	_, err := conn.Write([]byte("fixture"))
 	assert.ErrorIs(t, err, quota.ErrUnavailable)

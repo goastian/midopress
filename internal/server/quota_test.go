@@ -22,11 +22,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/goastian/midopress/internal/auth"
 	"github.com/goastian/midopress/internal/config"
 	"github.com/goastian/midopress/internal/quota"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func newQuotaHarness(t *testing.T, limits quota.Limits, options ...harnessOption) (*harness, string) {
@@ -106,7 +107,7 @@ func TestQuotaConcurrentHTTPStreamRejectsAndReleasesSlot(t *testing.T) {
 	c.Timeout = 5 * time.Second
 	resp, err := c.Get(h.plainURL("/stream"))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, err = io.ReadFull(resp.Body, make([]byte, 20))
 	require.NoError(t, err)
 	blocked, _ := h.get(h.viaUser("phone", token), h.plainURL("/status/204"))
@@ -150,7 +151,7 @@ func TestQuotaHTTPBytesCapUploadDownloadAndUpgradeBodies(t *testing.T) {
 			resp, err := c.Do(req)
 			if err == nil {
 				data, readErr := io.ReadAll(resp.Body)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				if mode == "download" {
 					assert.LessOrEqual(t, len(data), 64)
 					assert.Error(t, readErr)
@@ -191,7 +192,7 @@ func TestQuotaOpaqueConnectGreetingConcurrencyAndByteLimit(t *testing.T) {
 	h, token := newQuotaHarness(t, quota.Limits{Bytes: 16, Concurrency: 1}, withoutMITM())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -199,7 +200,7 @@ func TestQuotaOpaqueConnectGreetingConcurrencyAndByteLimit(t *testing.T) {
 				return
 			}
 			go func() {
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				_, _ = conn.Write([]byte("hello"))
 				data, _ := io.ReadAll(conn)
 				_, _ = conn.Write(bytes.ToUpper(data))
@@ -208,14 +209,14 @@ func TestQuotaOpaqueConnectGreetingConcurrencyAndByteLimit(t *testing.T) {
 	}()
 	h.routes.Store("quota.test:7000", ln.Addr().String())
 	conn, reader, resp := quotaConnect(t, h, token, "quota.test:7000")
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
 	greeting := make([]byte, 5)
 	_, err = io.ReadFull(reader, greeting)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(greeting))
 	second, _, blocked := quotaConnect(t, h, token, "quota.test:7000")
-	second.Close()
+	_ = second.Close()
 	assert.Equal(t, 429, blocked.StatusCode)
 	assert.Equal(t, "concurrency", blocked.Header.Get("X-MidoPress-Quota"))
 	_, err = conn.Write(bytes.Repeat([]byte("x"), 32))
@@ -228,7 +229,7 @@ func TestQuotaOpaqueConnectGreetingConcurrencyAndByteLimit(t *testing.T) {
 func TestQuotaWebSocketMetersBothDirectionsAndClosesAtLimit(t *testing.T) {
 	h, token := newQuotaHarness(t, quota.Limits{Bytes: 32, Concurrency: 1})
 	conn := h.rawConn()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
 	_, err := fmt.Fprintf(conn, "GET http://example.com/ws HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: fixture-key\r\nSec-WebSocket-Version: 13\r\n\r\n", quotaAuthorization(token))
 	require.NoError(t, err)
@@ -389,7 +390,7 @@ func TestQuotaOverridesAdminSeparationAndRegistrationLimits(t *testing.T) {
 		req.Header.Set("Proxy-Authorization", "Bearer "+adminToken)
 		response, err = h.client().Do(req)
 		require.NoError(t, err)
-		response.Body.Close()
+		_ = response.Body.Close()
 		assert.Equal(t, 407, response.StatusCode)
 		response, _ = h.admin(t).call("GET", "/api/v1/about", nil)
 		assert.Equal(t, 200, response.StatusCode)

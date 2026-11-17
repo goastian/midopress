@@ -9,6 +9,7 @@ import (
 	"github.com/gen2brain/avif"
 	"github.com/gen2brain/jpegli"
 	"github.com/gen2brain/webp"
+
 	"github.com/goastian/midopress/internal/jxlcodec"
 )
 

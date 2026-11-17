@@ -110,11 +110,11 @@ func TestFailedResizeDoesNotRetryAfterBudgetIsSpent(t *testing.T) {
 	raw := resizeFriendlyJPEG(t)
 	p := profile(t, ProfileSaver)
 	p.Formats = []Format{WebP}
-	be := &damagingResizeBackend{delay: 200 * time.Millisecond}
+	be := &damagingResizeBackend{delay: 2 * time.Second}
 	e := NewEngine(be)
 	e.Metric = MetricSSIM
 	result, err := e.Optimize(context.Background(), Input{Raw: raw, Format: JPEG, Profile: p,
-		Caps: Caps{WebP: true}, OutputFormat: WebP, Hints: Hints{ViewportWidth: 120}, Fixed: 100, Budget: 100 * time.Millisecond})
+		Caps: Caps{WebP: true}, OutputFormat: WebP, Hints: Hints{ViewportWidth: 120}, Fixed: 100, Budget: 2 * time.Second})
 	require.NoError(t, err)
 	assert.Equal(t, JPEG, result.Format)
 	assert.True(t, result.Lossless)

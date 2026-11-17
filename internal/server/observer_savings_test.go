@@ -4,12 +4,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/goastian/midopress/internal/flows"
 	"github.com/goastian/midopress/internal/pipeline"
 	"github.com/goastian/midopress/internal/proxy"
 	"github.com/goastian/midopress/internal/stats"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestObserverSavingsExcludeFailuresInStatsAndFlows(t *testing.T) {

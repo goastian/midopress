@@ -18,7 +18,7 @@ func Acquire(path string, nonblocking bool) (func(), error) {
 		op |= unix.LOCK_NB
 	}
 	if err := unix.Flock(int(f.Fd()), op); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN); _ = f.Close() }, nil

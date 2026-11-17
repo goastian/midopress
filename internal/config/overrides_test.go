@@ -10,6 +10,7 @@ import (
 
 	"github.com/goastian/midopress/internal/img"
 	"github.com/goastian/midopress/internal/rules"
+	"github.com/goastian/midopress/internal/testutil"
 )
 
 func TestOverridesRoundTripAndApply(t *testing.T) {
@@ -23,7 +24,7 @@ func TestOverridesRoundTripAndApply(t *testing.T) {
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	testutil.AssertFileMode(t, os.FileMode(0o600), info.Mode().Perm())
 
 	got, err := LoadOverrides(path)
 	require.NoError(t, err)
@@ -98,7 +99,7 @@ func TestWebSettings(t *testing.T) {
 	assert.Equal(t, filepath.Join(w.StateDirPath(), "admin.token"), w.TokenPath())
 	assert.Equal(t, filepath.Join(w.StateDirPath(), "ui.yaml"), w.UIPath())
 	w.StateDir = "/var/lib/x"
-	assert.Equal(t, "/var/lib/x/admin.token", w.TokenPath())
+	assert.Equal(t, filepath.Join(w.StateDir, "admin.token"), w.TokenPath())
 	w.AdminTokenFile = "/run/secret"
 	assert.Equal(t, "/run/secret", w.TokenPath())
 

@@ -55,7 +55,7 @@ func validateURL(u *url.URL) error {
 		(u.Scheme != "http" && u.Scheme != "https") || strings.Contains(u.Host, "%") {
 		return errDestination
 	}
-	if port := u.Port(); port != "" && !((u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443")) {
+	if port := u.Port(); port != "" && (u.Scheme != "http" || port != "80") && (u.Scheme != "https" || port != "443") {
 		return errDestination
 	}
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")

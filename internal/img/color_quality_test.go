@@ -13,10 +13,11 @@ import (
 	"os"
 	"testing"
 
-	"github.com/goastian/midopress/internal/colorcms"
-	"github.com/goastian/midopress/internal/imgmeta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/colorcms"
+	"github.com/goastian/midopress/internal/imgmeta"
 )
 
 func pngColorChunk(kind string, data []byte) []byte {

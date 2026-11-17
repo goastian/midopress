@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/goastian/midopress/internal/codec"
 	"github.com/goastian/midopress/internal/codecworker"
 	"github.com/goastian/midopress/internal/img"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/goastian/midopress/internal/testutil"
 )
 
 func TestMain(m *testing.M) {
@@ -37,6 +39,16 @@ func TestDefaultPipelineRequiresRealSandbox(t *testing.T) {
 	p := New(cfg)
 	defer p.Close()
 	state := p.Sandbox()
+	if !testutil.SandboxSupported() {
+		require.False(t, state.Enforced)
+		require.NotEmpty(t, state.Error)
+		body := htmlBody(250)
+		rec, out := run(p, newReq("Accept-Encoding", "br"), newResp("text/html", body))
+		assert.Equal(t, PassError, out.Reason)
+		assert.Equal(t, body, rec.Body.Bytes())
+		assert.Empty(t, rec.Header().Get("Content-Encoding"))
+		return
+	}
 	require.True(t, state.Enforced, state.Error)
 	require.False(t, state.VerifiedAt.IsZero())
 	assert.Equal(t, "denied", state.Network)
@@ -136,8 +148,8 @@ func TestIsolatedUnknownStreamSendsHeadersAndFirstChunkBeforeEOF(t *testing.T) {
 	p := New(cfg)
 	defer p.Close()
 	pr, pw := io.Pipe()
-	defer pr.Close()
-	defer pw.Close()
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
 	resp := newResp("text/plain", nil, withUnknownLength())
 	resp.Body = pr
 	rec := &streamProbe{header: make(http.Header), headers: make(chan int, 1), chunks: make(chan string, 1)}

@@ -5,10 +5,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/goastian/midopress/internal/img"
-	"github.com/goastian/midopress/internal/quality"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/goastian/midopress/internal/img"
+	"github.com/goastian/midopress/internal/quality"
 )
 
 // A sizing or fixed-quality request must still meet the profile's full-size metric.

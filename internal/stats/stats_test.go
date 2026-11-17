@@ -512,7 +512,7 @@ func tsInterfaces(t *testing.T) map[string][]string {
 	head := regexp.MustCompile(`(?m)^export interface (\w+)(?: extends (\w+))? \{$`)
 	field := regexp.MustCompile(`^\s+(\w+)\??:`)
 	out := map[string][]string{}
-	lines := strings.Split(string(src), "\n")
+	lines := strings.Split(strings.ReplaceAll(string(src), "\r\n", "\n"), "\n")
 	for i, l := range lines {
 		m := head.FindStringSubmatch(l)
 		if m == nil {
