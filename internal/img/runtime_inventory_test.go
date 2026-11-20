@@ -31,7 +31,7 @@ func TestRuntimeInventoryReportsSelectedLibrariesAndEmbeddedHashes(t *testing.T)
 			t.Errorf("missing artifact hash for %s", id)
 		}
 	}
-	if byID["jxl-wasi"].Version != "0.11.2" || byID["lcms-wasi"].Version != "2.19.1" {
+	if byID["jxl-wasi"].Version != "0.13.0" || byID["lcms-wasi"].Version != "2.19.1" {
 		t.Fatal("missing reviewed WASM versions")
 	}
 	for f, id := range map[Format]string{WebP: "webp-native", AVIF: "avif-native"} {

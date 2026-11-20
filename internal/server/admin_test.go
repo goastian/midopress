@@ -826,7 +826,7 @@ func TestServiceCommands(t *testing.T) {
 			assert.Len(t, c.SHA256, 64)
 		}
 	}
-	assert.Equal(t, "0.11.2", components["jxl-wasi"])
+	assert.Equal(t, "0.13.0", components["jxl-wasi"])
 	assert.Equal(t, "2.19.1", components["lcms-wasi"])
 
 	resp, body := a.call("GET", "/api/v1/metrics", nil)
