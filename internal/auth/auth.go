@@ -54,6 +54,7 @@ type Decision struct {
 	Allowed    bool
 	Status     int
 	Device     string
+	Traffic    *DeviceTraffic
 	Challenge  string
 	RetryAfter time.Duration
 }
@@ -65,6 +66,35 @@ type deviceEntry struct {
 	hash    digest
 	profile string
 	quotas  *quota.Limits
+	traffic *DeviceTraffic
+}
+
+type DeviceTraffic struct {
+	mu             sync.Mutex
+	original, sent int64
+}
+
+type TrafficSnapshot struct {
+	OriginalBytes int64 `json:"original_bytes"`
+	SentBytes     int64 `json:"sent_bytes"`
+	SavedBytes    int64 `json:"saved_bytes"`
+}
+
+func (t *DeviceTraffic) Record(original, sent int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.original += original
+	t.sent += sent
+}
+
+func (t *DeviceTraffic) Snapshot() TrafficSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return TrafficSnapshot{
+		OriginalBytes: t.original,
+		SentBytes:     t.sent,
+		SavedBytes:    t.original - t.sent,
+	}
 }
 
 // snapshot is an immutable view of the devices file.
@@ -227,12 +257,21 @@ func (a *Authenticator) Reload() error {
 		byID:    make(map[string]*deviceEntry, len(devices)),
 		byToken: make(map[digest]*deviceEntry, len(devices)),
 	}
+	prev := a.devices.Load()
 	for _, d := range devices {
 		h, err := decodeDigest(d.TokenSHA256)
 		if err != nil {
 			return err
 		}
 		e := &deviceEntry{id: d.ID, hash: h, profile: d.Profile, quotas: d.Quotas}
+		if prev != nil {
+			if old := prev.byID[d.ID]; old != nil && old.hash == h {
+				e.traffic = old.traffic
+			}
+		}
+		if e.traffic == nil {
+			e.traffic = &DeviceTraffic{}
+		}
 		snap.byID[d.ID] = e
 		snap.byToken[h] = e
 	}
@@ -297,8 +336,13 @@ func (a *Authenticator) Check(remote, proxyAuthorization string) Decision {
 	if proxyAuthorization == "" {
 		return Decision{Status: 407, Challenge: a.challenge}
 	}
-	if device, ok := a.verify(proxyAuthorization); ok {
-		return Decision{Allowed: true, Device: device}
+	snap := a.devices.Load()
+	if device, ok := a.verify(proxyAuthorization, snap); ok {
+		d := Decision{Allowed: true, Device: device}
+		if snap != nil {
+			d.Traffic = snap.byID[device].traffic
+		}
+		return d
 	}
 	a.recordFailure(key, now)
 	return Decision{Status: 407, Challenge: a.challenge}
@@ -318,7 +362,7 @@ func (a *Authenticator) recordFailure(key netip.Addr, now time.Time) {
 	a.failures.AddWithTTL(key, fe, a.window)
 }
 
-func (a *Authenticator) verify(header string) (string, bool) {
+func (a *Authenticator) verify(header string, snap *snapshot) (string, bool) {
 	if len(header) > maxHeaderLen {
 		return "", false
 	}
@@ -340,7 +384,7 @@ func (a *Authenticator) verify(header string) (string, bool) {
 		if a.mode == ModeBasic {
 			return a.verifyBasic(user, pass)
 		}
-		return a.verifyDeviceBasic(user, pass)
+		return a.verifyDeviceBasic(user, pass, snap)
 	case strings.EqualFold(scheme, "Bearer") && a.mode == ModeToken:
 		var tok [maxHeaderLen]byte
 		n := copy(tok[:], rest)
@@ -348,7 +392,7 @@ func (a *Authenticator) verify(header string) (string, bool) {
 		if a.reserved(sum) {
 			return "", false
 		}
-		if e, ok := a.devices.Load().byToken[sum]; ok {
+		if e, ok := snap.byToken[sum]; ok {
 			return e.id, true
 		}
 	}
@@ -431,9 +475,9 @@ func (a *Authenticator) DeviceProfile(id string) string {
 	return ""
 }
 
-func (a *Authenticator) verifyDeviceBasic(id, token []byte) (string, bool) {
+func (a *Authenticator) verifyDeviceBasic(id, token []byte, snap *snapshot) (string, bool) {
 	th := sha256.Sum256(token)
-	e, found := a.devices.Load().byID[string(id)]
+	e, found := snap.byID[string(id)]
 	want := &a.dummyHash
 	if found {
 		want = &e.hash

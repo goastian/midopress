@@ -295,9 +295,11 @@ func TestConcurrentTraffic(t *testing.T) {
 		t.Error(e)
 	}
 
+	assert.Eventually(t, func() bool {
+		return h.srv.Proxy().Stats().InFlight == 0
+	}, time.Second, 10*time.Millisecond, "nothing is left in flight")
 	s := h.srv.Proxy().Stats()
 	assert.GreaterOrEqual(t, s.Requests, uint64(workers*rounds))
-	assert.Zero(t, s.InFlight, "nothing is left in flight")
 	assert.Zero(t, s.Aborted)
 }
 

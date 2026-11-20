@@ -28,7 +28,7 @@ const (
 	MaxBytes  = 64 << 20
 	MaxPixels = 16_000_000
 	MaxFrames = 256
-	Version   = "libjxl-0.11.2-wasm32-wasi-v1"
+	Version   = "libjxl-0.13.0-wasm32-wasi-v1"
 )
 
 var ErrInvalid = errors.New("jxl: unsupported, invalid or over-limit image")
