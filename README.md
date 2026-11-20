@@ -343,6 +343,24 @@ who guesses wrong too many times is locked out for a minute.
 Without TLS, user names and passwords cross the network in the clear. The proxy
 warns about it on startup.
 
+Midori Lite can read the totals for its device with a direct
+`GET /api/v1/lite/stats` on the proxy listener using
+`Authorization: Bearer <device-token>`. The JSON response contains
+`original_bytes`, `sent_bytes` and their signed difference, `saved_bytes`.
+The counters cover complete HTTP text, image and font response bodies with
+status 200 or 203. They start from zero when the proxy restarts or the token
+changes. Connect over TLS outside loopback installations.
+
+For Lite devices, a WebP-only profile keeps slow image formats off the page's
+critical path. Assign it with `midopress device add -profile lite-mobile`.
+
+```yaml
+profiles:
+  lite-mobile:
+    base: saver
+    formats: [webp]
+```
+
 ### TLS to the proxy
 
 To encrypt the traffic between the browser and the proxy you need a

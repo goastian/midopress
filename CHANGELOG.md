@@ -14,10 +14,15 @@ Every byte that was not saved has a name now, and more of what can be shrunk is.
 - Require Go 1.27.4 for the `net/http` security fix (GO-2026-6859), and use
   Node 22.23.5 for the web build, Docker and CI. Update Go and web dependencies
   and their lockfiles, add npm auditing to CI and weekly dependency updates.
+- Rebuild the bundled JPEG XL WASM codec with libjxl 0.13.0 and Brotli 1.2.1
+  (CVE-2026-111497).
 - Add a current Spanish feature inventory, progressive delivery plan and
   Cloudflare/AI research under `docs/12` through `docs/15`.
 
 ### Added
+
+- Midori Lite clients can read per-device HTTP compression totals on the proxy
+  listener with `GET /api/v1/lite/stats` and their own device token.
 
 - Dashboard: the headline is the saving on what can be shrunk (images, text,
   fonts), with video and audio (`media`, a new kind) and the HTTPS tunnels that

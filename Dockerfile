@@ -25,7 +25,9 @@ FROM debian:trixie-slim
 # binary. It is off by default because in testing a stress run of the native
 # path crashed once in about ten runs (see docs/05-work-plan.md, phase 2).
 ARG NATIVE_CODECS=0
-RUN apt-get update \
+RUN printf '%s\n' 'Acquire::Retries "0";' > /etc/apt/apt.conf.d/99midopress-no-retries \
+    && apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends openssl ca-certificates \
     && if [ "$NATIVE_CODECS" = "1" ]; then \
          apt-get install -y --no-install-recommends libwebp7 libwebpdemux2 libwebpmux3 libavif16 libjxl0.11 \

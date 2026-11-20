@@ -1,14 +1,14 @@
 {
-  "libjxl": "0.11.2",
-  "revision": "332feb17d17311c748445f7ee75c4fb55cc38530",
+  "libjxl": "0.13.0",
+  "revision": "5a7da83447212fe4900fc29ce97430b881caa67e",
   "target": "wasm32-wasi",
   "wasi_sdk": "25.0",
   "llvm": "19.1.5",
-  "sha256": "29953da404872e7dad09b014e0f9191ff5624b53a9c26eb2f53c48a0c567bd68",
+  "sha256": "6a859c3095b3f2e6380ee694cc92fa0eee5cb0cd78366c9305282d3fc63b39f8",
+  "wrapper_sha256": "728f53c3a981cc8294a564687e4aa024ec34209e32c8581d78bd77972df2e3c3",
   "sources": {
-    "brotli": "36533a866ed1ca4b75cf049f4521e4ec5fe24727",
+    "brotli": "db24a98aed38a16de78cc05ca15cdd8dc2a0d92d",
     "highway": "457c891775a7397bdb0376bb1031e6e027af1c48",
     "lcms": "5176347635785e53ee5cee92328f76fda766ecc6"
-  },
-  "wrapper_sha256": "728f53c3a981cc8294a564687e4aa024ec34209e32c8581d78bd77972df2e3c3"
+  }
 }

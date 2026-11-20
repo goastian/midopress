@@ -5,6 +5,7 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -247,16 +248,39 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d := p.opts.Auth.Check(r.RemoteAddr, r.Header.Get("Proxy-Authorization"))
+	liteStats := directVisit && r.Method == http.MethodGet && r.URL.Path == "/api/v1/lite/stats"
+	credentials := r.Header.Get("Proxy-Authorization")
+	if liteStats {
+		w.Header().Set("Cache-Control", "no-store")
+		if credentials == "" {
+			credentials = r.Header.Get("Authorization")
+		}
+	}
+	d := p.opts.Auth.Check(r.RemoteAddr, credentials)
 	if !d.Allowed {
 		p.denied.Add(1)
 		switch d.Status {
 		case http.StatusProxyAuthRequired:
+			if liteStats {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
 			w.Header().Set("Proxy-Authenticate", d.Challenge)
 		case http.StatusTooManyRequests:
 			w.Header().Set("Retry-After", strconv.Itoa(int(d.RetryAfter.Seconds())))
 		}
 		w.WriteHeader(d.Status)
+		return
+	}
+
+	if liteStats {
+		if d.Traffic == nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(d.Traffic.Snapshot())
 		return
 	}
 
@@ -274,14 +298,14 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 			p.handleLocal(w, r)
 			return
 		}
-		p.forward(w, r)
+		p.forward(w, r, d.Traffic)
 	case directVisit:
 		p.handleLocal(w, r)
 	default:
 		// HTTP/2 request in origin form for another host.
 		r.URL.Scheme = "http"
 		r.URL.Host = r.Host
-		p.forward(w, r)
+		p.forward(w, r, d.Traffic)
 	}
 }
 
@@ -302,11 +326,11 @@ func (p *Proxy) serveMITM(w http.ResponseWriter, r *http.Request) {
 	}
 	r.URL.Scheme = "https"
 	r.URL.Host = r.Host
-	p.forward(w, r)
+	p.forward(w, r, nil)
 }
 
 // forward sends the request upstream and writes the response back.
-func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, traffic *auth.DeviceTraffic) {
 	if r.URL.Scheme != "http" && r.URL.Scheme != "https" {
 		http.Error(w, "unsupported scheme", http.StatusBadRequest)
 		return
@@ -353,6 +377,13 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	out := p.opts.Pipeline.Handle(w, r, resp)
+	if traffic != nil && r.URL.Scheme == "http" && out.Err == nil &&
+		(resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNonAuthoritativeInfo) {
+		switch out.Kind {
+		case "image", "text", "font":
+			traffic.Record(out.BytesIn, out.BytesOut)
+		}
+	}
 	if p.opts.Observer != nil {
 		p.opts.Observer.Observe(&Observation{
 			Time: start, Method: r.Method, Scheme: r.URL.Scheme, Host: r.URL.Hostname(), Path: r.URL.RequestURI(),

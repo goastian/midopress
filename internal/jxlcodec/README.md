@@ -1,8 +1,8 @@
 # Portable JPEG XL
 
-`lib/codec.wasm.gz` embeds libjxl 0.11.2 (commit
-`332feb17d17311c748445f7ee75c4fb55cc38530`), its JPEG coefficient transcoder,
-Brotli, Highway and LittleCMS. It is WebAssembly executed by wazero; no shared
+`lib/codec.wasm.gz` embeds libjxl 0.13.0 (commit
+`5a7da83447212fe4900fc29ce97430b881caa67e`), its JPEG coefficient transcoder,
+Brotli 1.2.1, Highway and LittleCMS. It is WebAssembly executed by wazero; no shared
 library, executable, cgo, Node runtime, filesystem mount or network mount is
 needed by the deployed binary. Third-party licenses accompany the module in
 `lib/licenses`.

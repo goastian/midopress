@@ -35,7 +35,7 @@ jobs:
             python3 scripts/sbom.py "$binary" --version "${GITHUB_REF_NAME#v}" --output "$name/sbom.cdx.json"
             cp LICENSE NOTICE README.md SECURITY.md "$name/"
             mkdir -p "$name/docs" "$name/codec-licenses/jxl"
-            cp docs/19-seguridad-operacion.md "$name/docs/"
+            if [ -f docs/19-seguridad-operacion.md ]; then cp docs/19-seguridad-operacion.md "$name/docs/"; fi
             cp internal/jxlcodec/lib/manifest.json "$name/codec-licenses/jxl/"
             cp internal/jxlcodec/lib/licenses/* "$name/codec-licenses/jxl/"
             cp internal/colorcms/LICENSE.lcms2 "$name/codec-licenses/"
